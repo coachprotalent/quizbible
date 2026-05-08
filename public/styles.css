@@ -512,7 +512,7 @@ textarea {
 }
 
 body.competition-immersive {
-  overflow: hidden;
+  overflow-y: auto;
   background: var(--bg);
 }
 
@@ -532,8 +532,10 @@ body.competition-immersive #startRound {
 
 body.competition-immersive #competitionView {
   width: 100%;
-  min-height: 100vh;
-  padding: clamp(0.75rem, 2vw, 1.5rem);
+  min-height: 100dvh;
+  max-height: 100dvh;
+  overflow-y: auto;
+  padding: clamp(0.75rem, 2vw, 1.5rem) clamp(0.75rem, 2vw, 1.5rem) clamp(5rem, 10vh, 7rem);
 }
 
 body.competition-immersive .competition-layout,
@@ -543,10 +545,14 @@ body.competition-immersive .room-panel {
 }
 
 body.competition-immersive .room-head {
+  position: sticky;
+  top: 0;
+  z-index: 15;
   box-shadow: none;
   border: 0;
   background: transparent;
   padding: 0 0 0.8rem;
+  backdrop-filter: blur(10px);
 }
 
 body.competition-immersive .room-head > div:first-child {
@@ -564,6 +570,10 @@ body.competition-immersive .game-board,
 body.competition-immersive .results {
   width: min(920px, 100%);
   margin: 0 auto;
+}
+
+body.competition-immersive .answers {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 body.competition-immersive .game-meta {
@@ -728,6 +738,14 @@ th {
   .room-actions {
     justify-content: stretch;
   }
+
+  body.competition-immersive .room-actions {
+    justify-content: flex-end;
+  }
+
+  body.competition-immersive #leaveRoom {
+    width: auto;
+  }
 }
 
 @media (max-width: 520px) {
@@ -742,5 +760,26 @@ th {
   .primary,
   .secondary {
     width: 100%;
+  }
+
+  body.competition-immersive #competitionView {
+    padding-bottom: 6rem;
+  }
+
+  body.competition-immersive .answers {
+    grid-template-columns: 1fr;
+  }
+
+  body.competition-immersive .game-meta {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+
+  body.competition-immersive .game-meta span:first-child {
+    grid-column: 1 / -1;
+  }
+
+  body.competition-immersive #leaveRoom {
+    width: auto;
   }
 }

@@ -943,6 +943,7 @@ function buildRoomState(roomInput, participantId) {
   const now = Date.now();
   const phase = round?.phase || room.status || 'waiting';
   const timeRemainingMs = timeRemainingForPhase(round, phase, now);
+  const phaseEndsAt = phaseEndTimeForPhase(round, phase);
   const countdownSeconds = Math.max(0, Math.ceil(timeRemainingMs / 1000));
   const revealQuestion = ['question_reveal', 'between_questions', 'finished'].includes(phase);
   const safeQuestion = currentQuestion ? {
@@ -967,6 +968,8 @@ function buildRoomState(roomInput, participantId) {
       totalPoints: currentAnswer.totalPoints,
       isCorrect: currentAnswer.isCorrect
     } : null,
+    serverNow: new Date(now).toISOString(),
+    phaseEndsAt: phaseEndsAt ? new Date(phaseEndsAt).toISOString() : null,
     timeRemainingMs,
     countdownSeconds,
     score: participant?.totalScore || 0,
@@ -978,10 +981,16 @@ function buildRoomState(roomInput, participantId) {
 
 function timeRemainingForPhase(round, phase, now) {
   if (!round) return 0;
-  if (phase === 'starting' && round.nextQuestionAt) return Math.max(0, new Date(round.nextQuestionAt).getTime() - now);
-  if (phase === 'question_active' && round.questionEndsAt) return Math.max(0, new Date(round.questionEndsAt).getTime() - now);
-  if (phase === 'question_reveal' && round.revealUntil) return Math.max(0, new Date(round.revealUntil).getTime() - now);
-  if (phase === 'between_questions' && round.nextQuestionAt) return Math.max(0, new Date(round.nextQuestionAt).getTime() - now);
+  const endTime = phaseEndTimeForPhase(round, phase);
+  return endTime ? Math.max(0, endTime - now) : 0;
+}
+
+function phaseEndTimeForPhase(round, phase) {
+  if (!round) return 0;
+  if (phase === 'starting' && round.nextQuestionAt) return new Date(round.nextQuestionAt).getTime();
+  if (phase === 'question_active' && round.questionEndsAt) return new Date(round.questionEndsAt).getTime();
+  if (phase === 'question_reveal' && round.revealUntil) return new Date(round.revealUntil).getTime();
+  if (phase === 'between_questions' && round.nextQuestionAt) return new Date(round.nextQuestionAt).getTime();
   return 0;
 }
 

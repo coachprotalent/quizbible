@@ -22,6 +22,9 @@ const competition = {
   score: 0,
   timerId: null,
   pollId: null,
+  phaseTimeoutId: null,
+  countdownId: null,
+  phaseRefreshKey: null,
   questionStartedAt: 0,
   remaining: 30,
   lastState: null
@@ -510,25 +513,36 @@ async function leaveCompetitionRoom() {
   const participant = competition.participant || getStoredParticipant(competition.room.id);
   if (!participant) return;
   if (!confirm('Voulez-vous vraiment quitter la partie ?')) return;
-  await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/leave?code=${encodeURIComponent(competition.room.accessCode)}`, {
-    method: 'POST',
-    body: { participantId: participant.id || participant }
-  });
-  const known = JSON.parse(localStorage.getItem('quizBibleParticipants') || '{}');
-  delete known[competition.room.id];
-  localStorage.setItem('quizBibleParticipants', JSON.stringify(known));
-  localStorage.removeItem('quizBibleCurrentRoomCode');
-  localStorage.removeItem('quizBibleCurrentRoomId');
-  stopCompetitionPolling();
-  setCompetitionImmersive(false);
-  competition.participant = null;
-  competition.room = null;
-  competition.round = null;
-  competition.lastState = null;
-  $('#roomPanel').classList.add('hidden');
-  await loadRooms();
-  showView('competition');
-  setRoomActionMessage('Vous avez quitte la partie.', true);
+  const button = $('#leaveRoom');
+  setButtonLoading(button, true);
+  try {
+    await api(`/api/rooms/${encodeURIComponent(competition.room.accessCode || competition.room.id)}/leave?code=${encodeURIComponent(competition.room.accessCode || '')}`, {
+      method: 'POST',
+      body: { participantId: participant.id || participant }
+    });
+    const known = JSON.parse(localStorage.getItem('quizBibleParticipants') || '{}');
+    delete known[competition.room.id];
+    localStorage.setItem('quizBibleParticipants', JSON.stringify(known));
+    localStorage.removeItem('quizBibleCurrentRoomCode');
+    localStorage.removeItem('quizBibleCurrentRoomId');
+    stopCompetitionPolling();
+    setCompetitionImmersive(false);
+    competition.participant = null;
+    competition.room = null;
+    competition.round = null;
+    competition.lastState = null;
+    $('#roomPanel').classList.add('hidden');
+    await loadRooms();
+    showView('competition');
+    setRoomActionMessage('Vous avez quitte la partie.', true);
+  } catch (error) {
+    console.error('leaveCompetitionRoom failed', error);
+    const message = error.message || 'Impossible de quitter la partie. Reessayez.';
+    setRoomActionMessage(message);
+    alert(message);
+  } finally {
+    setButtonLoading(button, false);
+  }
 }
 
 function getStoredParticipant(roomId) {
@@ -782,7 +796,8 @@ function renderCompetitionState(data) {
   competition.room = data.room;
   competition.participant = data.participant;
   competition.round = data.round;
-  setCompetitionImmersive(['starting', 'question_active', 'question_reveal', 'between_questions'].includes(data.phase));
+  setCompetitionImmersive(['starting', 'question_active', 'question_reveal', 'between_questions', 'finished'].includes(data.phase));
+  syncCompetitionCountdown(data);
   const room = data.room;
   $('#roomPanel').classList.remove('hidden');
   $('#roomStatus').textContent = `${labelPhase(data.phase || room.status)} - ${room.difficulty}`;
@@ -935,6 +950,38 @@ function setCompetitionImmersive(active) {
   document.body.classList.toggle('competition-immersive', active);
 }
 
+function syncCompetitionCountdown(data) {
+  clearTimeout(competition.phaseTimeoutId);
+  clearInterval(competition.countdownId);
+  competition.phaseTimeoutId = null;
+  competition.countdownId = null;
+
+  const phaseEndsAt = data.phaseEndsAt ? new Date(data.phaseEndsAt).getTime() : 0;
+  const serverNow = data.serverNow ? new Date(data.serverNow).getTime() : Date.now();
+  if (!phaseEndsAt) return;
+
+  const serverOffset = serverNow - Date.now();
+  const phaseKey = `${data.round?.id || 'room'}:${data.phase}:${data.questionIndex}:${phaseEndsAt}`;
+  const updateCountdown = () => {
+    const remainingMs = phaseEndsAt - (Date.now() + serverOffset);
+    const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
+    $('#competitionTimer').textContent = `${seconds}s`;
+    if (data.room?.questionTimeLimit && data.phase === 'question_active') {
+      $('#competitionTimerBar').style.width = `${Math.max(0, Math.min(100, (remainingMs / (data.room.questionTimeLimit * 1000)) * 100))}%`;
+    }
+    if (remainingMs <= 0 && competition.phaseRefreshKey !== phaseKey) {
+      competition.phaseRefreshKey = phaseKey;
+      clearTimeout(competition.phaseTimeoutId);
+      clearInterval(competition.countdownId);
+      loadCompetitionState().catch((error) => console.error('phase refresh failed', error));
+    }
+  };
+
+  updateCountdown();
+  competition.countdownId = setInterval(updateCountdown, 250);
+  competition.phaseTimeoutId = setTimeout(updateCountdown, Math.max(0, phaseEndsAt - serverNow) + 20);
+}
+
 function renderInlineLeaderboard(leaderboard) {
   if (!leaderboard.length) return '<div class="mini-leaderboard"><strong>Classement provisoire</strong><span>Aucun score pour le moment.</span></div>';
   return `
@@ -957,7 +1004,12 @@ function startCompetitionPolling() {
 
 function stopCompetitionPolling() {
   if (competition.pollId) clearInterval(competition.pollId);
+  if (competition.phaseTimeoutId) clearTimeout(competition.phaseTimeoutId);
+  if (competition.countdownId) clearInterval(competition.countdownId);
   competition.pollId = null;
+  competition.phaseTimeoutId = null;
+  competition.countdownId = null;
+  competition.phaseRefreshKey = null;
 }
 
 function persistRoom(room) {
