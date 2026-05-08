@@ -114,19 +114,27 @@ Si Azure OpenAI n'est pas configure, l'API renvoie des questions locales actives
 
 ## Mode Competition
 
-Le mode Competition permet de creer un salon sur 1, 3, 7, 14 jours ou une duree personnalisee.
+Le mode Competition est un salon rapide pour jouer tout de suite avec des amis.
 
-Le createur choisit :
+Creation rapide :
 
-- nom et description du salon ;
-- categorie biblique et difficulte ;
-- nombre de questions par tour ;
-- duree maximale du tour ;
-- chrono par question ;
-- date de debut et date de fin ;
+- nom du joueur ;
+- categorie, par defaut `Quiz au hasard` ;
+- difficulte, par defaut `Intermediaire` ;
+- nombre de questions, par defaut `10` ;
+- chrono par question, par defaut `30 secondes`.
+
+Apres creation, l'application genere un code court de type `BIBLE-482`, affiche un lien d'invitation et place le createur dans l'ecran d'attente. Les amis rejoignent avec le code ou le lien, puis le createur clique sur `Lancer la partie`.
+
+Options avancees repliees :
+
+- temps total de la partie ;
 - salon public ou prive ;
-- code d'invitation ;
-- questions communes ou personnalisees.
+- types de questions ;
+- activation ou desactivation des explications ;
+- source IA Azure ou questions locales.
+
+Tous les joueurs recoivent le meme set de questions pour la partie. Apres chaque question, l'application affiche la bonne reponse, une courte explication si activee et le classement provisoire. A la fin, elle affiche le classement final.
 
 Endpoints :
 
@@ -157,7 +165,7 @@ Par defaut :
 - bonus vitesse : jusqu'a 10 points ;
 - mauvaise reponse ou non-reponse : 0 point.
 
-Les questions de tour sont stockees dans `data/roundQuestions.json` avant d'etre envoyees aux participants. Tous les participants d'un meme tour recoivent le meme set de questions, sauf extension future du mode personnalise.
+Les questions de partie sont stockees dans `data/roundQuestions.json` avant d'etre envoyees aux participants. Tous les participants d'un meme salon recoivent le meme set de questions.
 
 Pipeline IA :
 

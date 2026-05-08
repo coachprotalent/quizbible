@@ -149,7 +149,7 @@ async function handleApi(req, res, url) {
     const rooms = readJson('rooms.json');
     room.id = `room-${crypto.randomUUID()}`;
     room.creatorId = room.creatorId || `creator-${crypto.randomUUID()}`;
-    room.accessCode = room.accessCode || createAccessCode();
+    room.accessCode = room.accessCode || createAccessCode(rooms);
     room.status = new Date(room.startDate) <= new Date() ? 'active' : 'waiting';
     room.createdAt = new Date().toISOString();
     rooms.push(room);
@@ -340,7 +340,7 @@ async function handleAdminApi(req, res, url) {
       if (!room) return sendJson(res, 404, { error: 'Salon introuvable' });
       const round = latestRoundForRoom(id) || createRound(room);
       const generated = await createQuestionsForRound(room, round);
-      sendJson(res, 200, { round, questions: generated });
+      sendJson(res, 200, { round: readJson('rounds.json').find((item) => item.id === round.id) || round, questions: generated });
       return;
     }
   }
@@ -376,7 +376,7 @@ async function handleRoomAction(req, res, match, url) {
     if (!allowed) return sendJson(res, 403, { error: 'Createur ou admin requis' });
     const round = createRound(room);
     const questions = await createQuestionsForRound(room, round);
-    sendJson(res, 201, { round, questions: questions.map(withoutRoundAnswer) });
+    sendJson(res, 201, { round: readJson('rounds.json').find((item) => item.id === round.id) || round, questions: questions.map(withoutRoundAnswer) });
     return;
   }
 
@@ -417,7 +417,7 @@ function sanitizeRoom(body) {
     name: sanitizeString(body.name || 'Salon biblique').slice(0, 120),
     description: sanitizeString(body.description || '').slice(0, 500),
     category: sanitizeString(body.category || 'random').slice(0, 80),
-    difficulty: sanitizeString(body.difficulty || body.level || 'debutant').slice(0, 80),
+    difficulty: sanitizeString(body.difficulty || body.level || 'intermediaire').slice(0, 80),
     creatorId: sanitizeString(body.creatorId || '').slice(0, 100),
     accessCode: sanitizeString(body.accessCode || '').slice(0, 24).toUpperCase(),
     isPublic: body.isPublic !== false,
@@ -425,9 +425,14 @@ function sanitizeRoom(body) {
     startDate: defaultStart.toISOString(),
     endDate: defaultEnd > defaultStart ? defaultEnd.toISOString() : new Date(defaultStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
     questionTimeLimit: clamp(Number(body.questionTimeLimit || 30), 15, 60),
-    roundTimeLimit: clamp(Number(body.roundTimeLimit || 10), 1, 60),
+    roundTimeLimit: clamp(Number(body.roundTimeLimit || 30), 5, 120),
     questionsPerRound: clamp(Number(body.questionsPerRound || 10), 1, 20),
     questionMode: body.questionMode === 'personalized' ? 'personalized' : 'same',
+    questionTypes: Array.isArray(body.questionTypes) && body.questionTypes.length
+      ? body.questionTypes.filter((type) => questionTypes.includes(type)).slice(0, 8)
+      : ['qcm', 'vrai_faux', 'personnage'],
+    explanationsEnabled: body.explanationsEnabled !== false,
+    questionSource: body.questionSource === 'local' ? 'local' : 'ai',
     createdAt: body.createdAt || new Date().toISOString()
   };
 }
@@ -560,7 +565,8 @@ async function createQuestionsForRound(room, round) {
     category: room.category,
     difficulty: room.difficulty,
     count: room.questionsPerRound,
-    questionTypes: ['qcm', 'vrai_faux', 'personnage'],
+    questionTypes: room.questionTypes || ['qcm', 'vrai_faux', 'personnage'],
+    questionSource: room.questionSource || 'ai',
     recentQuestions: recentRoomQuestionTexts(room.id)
   });
   const saved = generated.questions.map((question, index) => sanitizeRoundQuestion({
@@ -578,6 +584,18 @@ async function createQuestionsForRound(room, round) {
 
 async function generateRoundQuestions(input) {
   const count = clamp(Number(input.count || 10), 1, 20);
+  if (input.questionSource === 'local') {
+    return {
+      questions: selectQuestions(input.category, input.difficulty || input.level, count).map((question) => ({
+        ...question,
+        difficulty: question.level,
+        aiValidationStatus: 'local_selected',
+        aiValidationNotes: 'Question locale choisie pour le salon'
+      })),
+      validationStatus: 'local_selected',
+      validation: { results: [] }
+    };
+  }
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     let generated = [];
@@ -844,8 +862,13 @@ function logAiError(scope, message) {
   });
 }
 
-function createAccessCode() {
-  return crypto.randomBytes(4).toString('hex').toUpperCase();
+function createAccessCode(existingRooms = readJson('rooms.json')) {
+  const used = new Set(existingRooms.map((room) => room.accessCode));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const code = `BIBLE-${crypto.randomInt(100, 1000)}`;
+    if (!used.has(code)) return code;
+  }
+  return `BIBLE-${crypto.randomInt(1000, 10000)}`;
 }
 
 function loadEnv() {

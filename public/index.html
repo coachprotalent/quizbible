@@ -54,44 +54,38 @@
       <section class="view shell" id="competitionView">
         <div class="section-head">
           <p class="eyebrow">Mode competition</p>
-          <h2>Salons bibliques sur plusieurs jours</h2>
+          <h2>Salon rapide entre amis</h2>
         </div>
         <div class="competition-layout">
           <form class="editor" id="roomCreateForm">
             <h3>Creer un salon</h3>
-            <input name="name" placeholder="Nom du salon" required>
-            <textarea name="description" placeholder="Description"></textarea>
+            <input name="playerName" placeholder="Votre nom" required>
+            <input name="name" placeholder="Nom du salon" value="Quiz entre amis" required>
             <select name="category" id="roomCategorySelect"></select>
             <select name="difficulty" id="roomLevelSelect"></select>
-            <label>Questions par tour
+            <label>Nombre de questions
               <div class="stepper"><button type="button" data-step="-1" data-target="questionsPerRound">-</button><input name="questionsPerRound" type="number" value="10" min="1" max="20"><button type="button" data-step="1" data-target="questionsPerRound">+</button></div>
-            </label>
-            <label>Duree max du tour (minutes)
-              <div class="stepper"><button type="button" data-step="-5" data-target="roundTimeLimit">-</button><input name="roundTimeLimit" type="number" value="10" min="1" max="60"><button type="button" data-step="5" data-target="roundTimeLimit">+</button></div>
             </label>
             <label>Chrono par question (secondes)
               <div class="stepper"><button type="button" data-step="-15" data-target="questionTimeLimit">-</button><input name="questionTimeLimit" type="number" value="30" min="15" max="60"><button type="button" data-step="15" data-target="questionTimeLimit">+</button></div>
             </label>
-            <label>Duree du salon
-              <select name="durationDays" id="roomDuration">
-                <option value="1">1 jour</option>
-                <option value="3">3 jours</option>
-                <option value="7" selected>7 jours</option>
-                <option value="14">14 jours</option>
-                <option value="custom">Personnalisee</option>
-              </select>
-            </label>
-            <label>Debut
-              <input name="startDate" type="datetime-local">
-            </label>
-            <label>Fin personnalisee
-              <input name="endDate" type="datetime-local">
-            </label>
-            <label>Code d'invitation
-              <input name="accessCode" maxlength="24" placeholder="Automatique si vide">
-            </label>
-            <label class="check"><input name="isPublic" type="checkbox" checked> Salon public</label>
-            <label class="check"><input name="questionMode" type="checkbox"> Questions personnalisees</label>
+            <button class="secondary" type="button" id="advancedToggle">Options avancees</button>
+            <div class="advanced-options hidden" id="advancedOptions">
+              <label>Temps total de la partie (minutes)
+                <div class="stepper"><button type="button" data-step="-5" data-target="roundTimeLimit">-</button><input name="roundTimeLimit" type="number" value="30" min="5" max="120"><button type="button" data-step="5" data-target="roundTimeLimit">+</button></div>
+              </label>
+              <label>Types de questions
+                <select name="questionTypes" multiple size="4" id="roomQuestionTypes"></select>
+              </label>
+              <label>Source des questions
+                <select name="questionSource">
+                  <option value="ai" selected>IA Azure si disponible</option>
+                  <option value="local">Questions locales</option>
+                </select>
+              </label>
+              <label class="check"><input name="isPublic" type="checkbox" checked> Salon public</label>
+              <label class="check"><input name="explanationsEnabled" type="checkbox" checked> Afficher les explications</label>
+            </div>
             <button class="primary" type="submit">Creer le salon</button>
           </form>
 
@@ -112,7 +106,7 @@
                 <div class="room-actions">
                   <button class="secondary" id="copyRoomLink" type="button">Lien</button>
                   <button class="secondary" id="leaveRoom" type="button">Quitter</button>
-                  <button class="primary" id="startRound" type="button">Demarrer un tour</button>
+                  <button class="primary" id="startRound" type="button">Lancer la partie</button>
                 </div>
               </div>
               <div class="stats-strip competition-stats">

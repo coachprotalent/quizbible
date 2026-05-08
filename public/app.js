@@ -84,6 +84,7 @@ function bindForms() {
   $('#leaveRoom').addEventListener('click', leaveCompetitionRoom);
   $('#copyRoomLink').addEventListener('click', copyRoomLink);
   $('#competitionNext').addEventListener('click', nextCompetitionQuestion);
+  $('#advancedToggle').addEventListener('click', () => $('#advancedOptions').classList.toggle('hidden'));
   $$('.stepper button').forEach((button) => button.addEventListener('click', stepNumberInput));
 }
 
@@ -94,6 +95,9 @@ function fillSelects() {
   ['#categorySelect', '#adminCategorySelect', '#challengeCategorySelect', '#roomCategorySelect'].forEach((selector) => $(selector).innerHTML = categoryOptions);
   ['#levelSelect', '#adminLevelSelect', '#challengeLevelSelect', '#roomLevelSelect'].forEach((selector) => $(selector).innerHTML = levelOptions);
   $('#adminTypeSelect').innerHTML = typeOptions;
+  $('#roomQuestionTypes').innerHTML = typeOptions;
+  $('#roomCategorySelect').value = 'random';
+  $('#roomLevelSelect').value = 'intermediaire';
 }
 
 function stepNumberInput(event) {
@@ -266,32 +270,40 @@ async function loadRooms() {
 async function createRoom(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const startDate = form.get('startDate') ? new Date(form.get('startDate')) : new Date();
-  const duration = form.get('durationDays');
-  const endDate = duration === 'custom' && form.get('endDate')
-    ? new Date(form.get('endDate'))
-    : new Date(startDate.getTime() + Number(duration || 7) * 24 * 60 * 60 * 1000);
+  const startDate = new Date();
+  const totalMinutes = Number(form.get('roundTimeLimit') || 30);
+  const endDate = new Date(startDate.getTime() + totalMinutes * 60 * 1000);
   const creatorId = localStorage.getItem('quizBibleCreatorId') || `creator-${cryptoRandom()}`;
   localStorage.setItem('quizBibleCreatorId', creatorId);
+  const selectedTypes = form.getAll('questionTypes');
   const { room } = await api('/api/rooms', {
     method: 'POST',
     body: {
       name: form.get('name'),
-      description: form.get('description'),
+      description: `Cree par ${form.get('playerName')}`,
       category: form.get('category'),
       difficulty: form.get('difficulty'),
       creatorId,
-      accessCode: form.get('accessCode'),
       isPublic: form.get('isPublic') === 'on',
-      questionMode: form.get('questionMode') === 'on' ? 'personalized' : 'same',
+      questionMode: 'same',
+      questionTypes: selectedTypes.length ? selectedTypes : ['qcm', 'vrai_faux', 'personnage'],
+      explanationsEnabled: form.get('explanationsEnabled') !== null,
+      questionSource: form.get('questionSource') || 'ai',
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
       questionTimeLimit: Number(form.get('questionTimeLimit')),
-      roundTimeLimit: Number(form.get('roundTimeLimit')),
+      roundTimeLimit: totalMinutes,
       questionsPerRound: Number(form.get('questionsPerRound'))
     }
   });
+  await joinRoom(room.id, form.get('playerName'));
   event.currentTarget.reset();
+  $('#roomCreateForm').elements.name.value = 'Quiz entre amis';
+  $('#roomCreateForm').elements.questionsPerRound.value = 10;
+  $('#roomCreateForm').elements.questionTimeLimit.value = 30;
+  $('#roomCreateForm').elements.roundTimeLimit.value = 30;
+  $('#roomCategorySelect').value = 'random';
+  $('#roomLevelSelect').value = 'intermediaire';
   await loadRooms();
   await openRoom(room.id);
 }
@@ -330,13 +342,13 @@ function renderRoom() {
   $('#roomPanel').classList.remove('hidden');
   $('#roomStatus').textContent = `${room.status} · ${room.difficulty}`;
   $('#roomTitle').textContent = room.name;
-  $('#roomDescription').textContent = room.description || 'Salon de competition biblique.';
+  $('#roomDescription').textContent = room.description || 'En attente des amis. Partagez le code puis lancez la partie.';
   $('#roomParticipants').textContent = room.participantCount || room.participants?.length || 0;
   $('#roomRounds').textContent = room.roundCount || room.rounds?.length || 0;
   $('#roomCode').textContent = room.accessCode;
   $('#roomRoundsHistory').innerHTML = (room.rounds || []).map((round) => `
     <article class="admin-item">
-      <strong>Tour ${round.roundNumber} · ${round.status}</strong>
+      <strong>Partie ${round.roundNumber} · ${round.status}</strong>
       <p>${new Date(round.startsAt).toLocaleString('fr-FR')} - ${new Date(round.endsAt).toLocaleString('fr-FR')}</p>
       <p>IA: ${round.generatedByAI ? 'oui' : 'fallback local'} · validation: ${escapeHtml(round.validationStatus)}</p>
     </article>
@@ -422,7 +434,9 @@ async function submitCompetitionAnswer(selectedAnswer) {
     if (selectedAnswer && button.textContent === selectedAnswer && !result.answer.isCorrect) button.classList.add('wrong');
   });
   $('#competitionFeedbackTitle').textContent = result.answer.isCorrect ? `+${result.answer.totalPoints} points` : '0 point';
-  $('#competitionFeedbackText').textContent = `${result.explanation} Bonne reponse : ${result.correctAnswer}.`;
+  $('#competitionFeedbackText').textContent = competition.room.explanationsEnabled === false
+    ? `Bonne reponse : ${result.correctAnswer}.`
+    : `${result.explanation} Bonne reponse : ${result.correctAnswer}.`;
   $('#competitionReference').textContent = result.reference ? `Reference : ${result.reference}` : '';
   $('#competitionFeedback').classList.remove('hidden');
   $('#competitionNext').textContent = competition.index + 1 >= competition.questions.length ? 'Resultat du tour' : 'Question suivante';
@@ -443,9 +457,9 @@ function finishCompetitionRound() {
   $('#competitionBoard').classList.add('hidden');
   $('#competitionResults').classList.remove('hidden');
   $('#competitionResults').innerHTML = `
-    <p class="eyebrow">Tour termine</p>
+    <p class="eyebrow">Classement final</p>
     <h2>${competition.score} points</h2>
-    <p>Le classement du salon est mis a jour apres chaque reponse.</p>
+    <p>La partie est terminee. Le classement final est affiche ci-dessous.</p>
   `;
   loadRoomLeaderboard();
 }
