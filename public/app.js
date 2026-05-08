@@ -21,8 +21,10 @@ const competition = {
   index: 0,
   score: 0,
   timerId: null,
+  pollId: null,
   questionStartedAt: 0,
-  remaining: 30
+  remaining: 30,
+  lastState: null
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -38,6 +40,7 @@ async function init() {
   fillSelects();
   await Promise.all([loadChallenges(), loadLeaderboard(), loadRooms()]);
   handleInitialHash();
+  restoreCompetitionSession();
   if (location.pathname === '/admin') showView('admin');
 }
 
@@ -269,56 +272,79 @@ async function loadRooms() {
 
 async function createRoom(event) {
   event.preventDefault();
+  const submit = event.submitter;
+  setButtonLoading(submit, true);
+  setRoomMessage('Creation du salon...', true);
   const form = new FormData(event.currentTarget);
-  const startDate = new Date();
-  const totalMinutes = Number(form.get('roundTimeLimit') || 30);
-  const endDate = new Date(startDate.getTime() + totalMinutes * 60 * 1000);
-  const creatorId = localStorage.getItem('quizBibleCreatorId') || `creator-${cryptoRandom()}`;
-  localStorage.setItem('quizBibleCreatorId', creatorId);
-  const selectedTypes = form.getAll('questionTypes');
-  const { room } = await api('/api/rooms', {
-    method: 'POST',
-    body: {
-      name: form.get('name'),
-      description: `Cree par ${form.get('playerName')}`,
-      category: form.get('category'),
-      difficulty: form.get('difficulty'),
-      creatorId,
-      isPublic: form.get('isPublic') === 'on',
-      questionMode: 'same',
-      questionTypes: selectedTypes.length ? selectedTypes : ['qcm', 'vrai_faux', 'personnage'],
-      explanationsEnabled: form.get('explanationsEnabled') !== null,
-      questionSource: form.get('questionSource') || 'ai',
-      startDate: startDate.toISOString(),
-      endDate: endDate.toISOString(),
-      questionTimeLimit: Number(form.get('questionTimeLimit')),
-      roundTimeLimit: totalMinutes,
-      questionsPerRound: Number(form.get('questionsPerRound'))
-    }
-  });
-  await joinRoom(room.id, form.get('playerName'));
-  event.currentTarget.reset();
-  $('#roomCreateForm').elements.name.value = 'Quiz entre amis';
-  $('#roomCreateForm').elements.questionsPerRound.value = 10;
-  $('#roomCreateForm').elements.questionTimeLimit.value = 30;
-  $('#roomCreateForm').elements.roundTimeLimit.value = 30;
-  $('#roomCategorySelect').value = 'random';
-  $('#roomLevelSelect').value = 'intermediaire';
-  await loadRooms();
-  await openRoom(room.id);
+  try {
+    const startDate = new Date();
+    const totalMinutes = Number(form.get('roundTimeLimit') || 30);
+    const endDate = new Date(startDate.getTime() + totalMinutes * 60 * 1000);
+    const creatorId = localStorage.getItem('quizBibleCreatorId') || `creator-${cryptoRandom()}`;
+    localStorage.setItem('quizBibleCreatorId', creatorId);
+    const selectedTypes = form.getAll('questionTypes');
+    const { room } = await api('/api/rooms', {
+      method: 'POST',
+      body: {
+        name: form.get('name'),
+        description: `Cree par ${form.get('playerName')}`,
+        category: form.get('category'),
+        difficulty: form.get('difficulty'),
+        creatorId,
+        isPublic: form.get('isPublic') === 'on',
+        questionMode: 'same',
+        questionTypes: selectedTypes.length ? selectedTypes : ['qcm', 'vrai_faux', 'personnage'],
+        explanationsEnabled: form.get('explanationsEnabled') !== null,
+        questionSource: form.get('questionSource') || 'ai',
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        questionTimeLimit: Number(form.get('questionTimeLimit')),
+        roundTimeLimit: totalMinutes,
+        questionsPerRound: Number(form.get('questionsPerRound'))
+      }
+    });
+    await joinRoom(room.id, form.get('playerName'));
+    event.currentTarget.reset();
+    resetQuickRoomDefaults();
+    setRoomMessage(`Salon cree : ${room.accessCode}`, true);
+    await loadRooms();
+  } catch (error) {
+    console.error('createRoom failed', error);
+    setRoomMessage(error.message || 'Creation impossible.');
+  } finally {
+    setButtonLoading(submit, false);
+  }
 }
 
 async function joinRoomByCode(event) {
   event.preventDefault();
+  const submit = event.submitter;
+  setButtonLoading(submit, true);
+  setRoomActionMessage('Connexion au salon...', true);
   const form = new FormData(event.currentTarget);
   const code = String(form.get('code')).trim().split('/').filter(Boolean).pop();
-  await joinRoom(code, form.get('playerName'));
+  try {
+    await joinRoom(code, form.get('playerName'));
+    setRoomActionMessage('Salon rejoint.', true);
+  } catch (error) {
+    console.error('joinRoom failed', error);
+    setRoomActionMessage(error.message || 'Impossible de rejoindre le salon.');
+  } finally {
+    setButtonLoading(submit, false);
+  }
 }
 
 async function openRoom(roomId) {
-  const { room } = await api(`/api/rooms/${encodeURIComponent(roomId)}`);
-  competition.room = room;
-  renderRoom();
+  try {
+    const { room } = await api(`/api/rooms/${encodeURIComponent(roomId)}`);
+    competition.room = room;
+    persistRoom(room);
+    await loadCompetitionState();
+    startCompetitionPolling();
+  } catch (error) {
+    console.error('openRoom failed', error);
+    setRoomActionMessage(error.message || 'Ouverture du salon impossible.');
+  }
 }
 
 async function joinRoom(roomIdOrCode, playerName) {
@@ -330,10 +356,13 @@ async function joinRoom(roomIdOrCode, playerName) {
   });
   known[room.id] = response.participant.id;
   localStorage.setItem('quizBibleParticipants', JSON.stringify(known));
+  localStorage.setItem('quizBiblePlayerName', response.participant.playerName);
   competition.room = response.room;
   competition.participant = response.participant;
-  renderRoom();
-  await refreshCurrentRound();
+  persistRoom(response.room);
+  renderCompetitionState({ room: response.room, participant: response.participant, participants: response.room.participants || [], leaderboard: [] });
+  await loadCompetitionState();
+  startCompetitionPolling();
 }
 
 function renderRoom() {
@@ -731,6 +760,228 @@ function escapeHtml(value) {
     '"': '&quot;',
     "'": '&#039;'
   })[char]);
+}
+
+function renderCompetitionState(data) {
+  if (!data?.room) return;
+  competition.lastState = data;
+  competition.room = data.room;
+  competition.participant = data.participant;
+  competition.round = data.round;
+  const room = data.room;
+  $('#roomPanel').classList.remove('hidden');
+  $('#roomStatus').textContent = `${labelPhase(data.phase || room.status)} - ${room.difficulty}`;
+  $('#roomTitle').textContent = room.name;
+  $('#roomDescription').textContent = room.description || 'En attente des amis. Partagez le code puis lancez la partie.';
+  $('#roomParticipants').textContent = data.participants?.length || room.participantCount || room.participants?.length || 0;
+  $('#roomRounds').textContent = room.roundCount || room.rounds?.length || 0;
+  $('#roomCode').textContent = room.accessCode;
+  $('#roomRoundsHistory').innerHTML = (room.rounds || []).map((round) => `
+    <article class="admin-item">
+      <strong>Partie ${round.roundNumber} - ${escapeHtml(round.phase || round.status)}</strong>
+      <p>${new Date(round.startsAt).toLocaleString('fr-FR')} - ${new Date(round.endsAt).toLocaleString('fr-FR')}</p>
+      <p>IA: ${round.generatedByAI ? 'oui' : 'fallback local'} - validation: ${escapeHtml(round.validationStatus)}</p>
+    </article>
+  `).join('') || '<p>Aucun tour.</p>';
+  renderRoomLeaderboard(data.leaderboard || []);
+  renderPhase(data);
+}
+
+function renderPhase(data) {
+  const phase = data.phase || 'waiting';
+  const question = data.currentQuestion;
+  $('#competitionScore').textContent = `${data.score || 0} pts`;
+  $('#competitionCounter').textContent = data.totalQuestions ? `Question ${data.questionIndex + 1}/${data.totalQuestions}` : 'En attente';
+  $('#competitionTimer').textContent = `${data.countdownSeconds || 0}s`;
+  $('#competitionTimerBar').style.width = data.room?.questionTimeLimit
+    ? `${Math.max(0, Math.min(100, (data.timeRemainingMs / (data.room.questionTimeLimit * 1000)) * 100))}%`
+    : '0%';
+
+  if (phase === 'waiting') {
+    $('#competitionBoard').classList.add('hidden');
+    $('#competitionResults').classList.remove('hidden');
+    $('#competitionResults').innerHTML = '<p class="eyebrow">Salle d attente</p><h2>Partagez le code</h2><p>La partie commencera quand le createur cliquera sur Lancer la partie.</p>';
+    return;
+  }
+  if (phase === 'starting') {
+    $('#competitionBoard').classList.add('hidden');
+    $('#competitionResults').classList.remove('hidden');
+    $('#competitionResults').innerHTML = `<p class="eyebrow">Lancement</p><h2>Depart dans ${data.countdownSeconds || 1}s</h2>`;
+    return;
+  }
+  if (phase === 'finished') {
+    $('#competitionBoard').classList.add('hidden');
+    $('#competitionResults').classList.remove('hidden');
+    $('#competitionResults').innerHTML = '<p class="eyebrow">Classement final</p><h2>Partie terminee</h2><p>Le classement final est affiche ci-dessous.</p>';
+    return;
+  }
+  if (!question) return;
+
+  $('#competitionResults').classList.add('hidden');
+  $('#competitionBoard').classList.remove('hidden');
+  $('#competitionType').textContent = question.type.replaceAll('_', ' ');
+  $('#competitionQuestion').textContent = question.question;
+  $('#competitionAnswers').innerHTML = question.options.map((option) => {
+    const selected = data.currentAnswer?.selectedAnswer === option;
+    const correct = question.correctAnswer && question.correctAnswer === option;
+    const wrong = selected && question.correctAnswer && question.correctAnswer !== option;
+    return `<button class="answer ${correct ? 'correct' : ''} ${wrong ? 'wrong' : ''}" type="button" ${data.currentAnswer || phase !== 'question_active' ? 'disabled' : ''}>${escapeHtml(option)}</button>`;
+  }).join('');
+  if (phase === 'question_active' && !data.currentAnswer) {
+    $$('#competitionAnswers .answer').forEach((button) => button.addEventListener('click', () => submitCompetitionAnswer(button, button.textContent)));
+  }
+  $('#competitionFeedback').classList.remove('hidden');
+  $('#competitionNext').classList.add('hidden');
+  if (phase === 'question_active') {
+    $('#competitionFeedbackTitle').textContent = data.currentAnswer ? 'Reponse enregistree' : 'A vous de jouer';
+    $('#competitionFeedbackText').textContent = data.currentAnswer ? 'Attente des autres joueurs. Les scores seront mis a jour a la fin du chrono.' : 'Repondez avant la fin du chrono.';
+    $('#competitionReference').textContent = '';
+    return;
+  }
+  if (phase === 'question_reveal' || phase === 'between_questions') {
+    $('#competitionFeedbackTitle').textContent = `Bonne reponse : ${question.correctAnswer}`;
+    $('#competitionFeedbackText').textContent = `${question.explanation || ''} Prochaine question dans ${data.countdownSeconds || 0}s.`;
+    $('#competitionReference').textContent = question.reference ? `Reference : ${question.reference}` : '';
+  }
+}
+
+async function startCompetitionRound(event) {
+  if (!competition.room) return;
+  const button = event?.currentTarget || $('#startRound');
+  setButtonLoading(button, true);
+  setRoomActionMessage('Lancement de la partie...', true);
+  try {
+    const creatorId = localStorage.getItem('quizBibleCreatorId') || '';
+    const participantId = competition.participant?.id || getStoredParticipant(competition.room.id);
+    const data = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/start-round?code=${encodeURIComponent(competition.room.accessCode)}`, {
+      method: 'POST',
+      body: { creatorId, participantId }
+    });
+    renderCompetitionState(data);
+    startCompetitionPolling();
+    setRoomActionMessage('Partie lancee.', true);
+  } catch (error) {
+    console.error('startCompetitionRound failed', error);
+    setRoomActionMessage(error.message || 'Lancement impossible.');
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+async function submitCompetitionAnswer(button, selectedAnswer) {
+  if (!competition.round || !competition.lastState?.currentQuestion) return;
+  setButtonLoading(button, true);
+  try {
+    const participant = competition.participant || getStoredParticipant(competition.room.id);
+    const result = await api(`/api/rounds/${encodeURIComponent(competition.round.id)}/answer`, {
+      method: 'POST',
+      body: { participantId: participant.id || participant, questionId: competition.lastState.currentQuestion.id, selectedAnswer }
+    });
+    renderCompetitionState(result.state);
+  } catch (error) {
+    console.error('submitCompetitionAnswer failed', error);
+    setRoomActionMessage(error.message || 'Reponse non enregistree.');
+    await loadCompetitionState();
+  } finally {
+    setButtonLoading(button, false);
+  }
+}
+
+function nextCompetitionQuestion() {
+  loadCompetitionState().catch((error) => console.error('manual state refresh failed', error));
+}
+
+async function loadRoomLeaderboard() {
+  if (!competition.room) return;
+  await loadCompetitionState();
+}
+
+async function loadCompetitionState() {
+  if (!competition.room) return;
+  const participantId = competition.participant?.id || getStoredParticipant(competition.room.id) || '';
+  const data = await api(`/api/rooms/${encodeURIComponent(competition.room.accessCode || competition.room.id)}/state?participantId=${encodeURIComponent(participantId)}&code=${encodeURIComponent(competition.room.accessCode || '')}`);
+  renderCompetitionState(data);
+}
+
+function startCompetitionPolling() {
+  stopCompetitionPolling();
+  competition.pollId = setInterval(() => {
+    loadCompetitionState().catch((error) => {
+      console.error('competition polling failed', error);
+      setRoomActionMessage('Synchronisation interrompue. Nouvelle tentative...');
+    });
+  }, 1000);
+}
+
+function stopCompetitionPolling() {
+  if (competition.pollId) clearInterval(competition.pollId);
+  competition.pollId = null;
+}
+
+function persistRoom(room) {
+  if (!room) return;
+  localStorage.setItem('quizBibleCurrentRoomCode', room.accessCode || room.id);
+  localStorage.setItem('quizBibleCurrentRoomId', room.id);
+}
+
+async function restoreCompetitionSession() {
+  const code = localStorage.getItem('quizBibleCurrentRoomCode');
+  if (!code) return;
+  try {
+    const { room } = await api(`/api/rooms/${encodeURIComponent(code)}`);
+    competition.room = room;
+    const participantId = getStoredParticipant(room.id);
+    if (participantId) {
+      const stateData = await api(`/api/rooms/${encodeURIComponent(room.accessCode)}/state?participantId=${encodeURIComponent(participantId)}&code=${encodeURIComponent(room.accessCode)}`);
+      renderCompetitionState(stateData);
+      startCompetitionPolling();
+    }
+  } catch (error) {
+    console.warn('restoreCompetitionSession failed', error);
+  }
+}
+
+function setButtonLoading(button, loading) {
+  if (!button) return;
+  if (loading) {
+    button.dataset.originalText = button.textContent;
+    button.textContent = '...';
+    button.disabled = true;
+  } else {
+    button.textContent = button.dataset.originalText || button.textContent;
+    button.disabled = false;
+  }
+}
+
+function setRoomMessage(message, ok = false) {
+  $('#roomFormMessage').textContent = message || '';
+  $('#roomFormMessage').classList.toggle('ok', ok);
+}
+
+function setRoomActionMessage(message, ok = false) {
+  $('#roomActionMessage').textContent = message || '';
+  $('#roomActionMessage').classList.toggle('ok', ok);
+}
+
+function resetQuickRoomDefaults() {
+  $('#roomCreateForm').elements.name.value = 'Quiz entre amis';
+  $('#roomCreateForm').elements.questionsPerRound.value = 10;
+  $('#roomCreateForm').elements.questionTimeLimit.value = 30;
+  $('#roomCreateForm').elements.roundTimeLimit.value = 30;
+  $('#roomCategorySelect').value = 'random';
+  $('#roomLevelSelect').value = 'intermediaire';
+}
+
+function labelPhase(phase) {
+  return {
+    waiting: 'Salle d attente',
+    starting: 'Lancement',
+    question_active: 'Question en cours',
+    question_reveal: 'Correction',
+    between_questions: 'Prochaine question',
+    finished: 'Termine',
+    closed: 'Ferme'
+  }[phase] || phase;
 }
 
 if (localStorage.getItem('quizBibleTheme') === 'dark') {

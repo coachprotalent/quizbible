@@ -375,6 +375,17 @@ h3 {
   background: rgba(201, 149, 47, 0.08);
 }
 
+.form-message {
+  min-height: 1.3rem;
+  margin: 0;
+  color: var(--bad);
+  font-weight: 700;
+}
+
+.form-message.ok {
+  color: var(--good);
+}
+
 label {
   display: grid;
   gap: 0.35rem;

@@ -134,7 +134,7 @@ Options avancees repliees :
 - activation ou desactivation des explications ;
 - source IA Azure ou questions locales.
 
-Tous les joueurs recoivent le meme set de questions pour la partie. Apres chaque question, l'application affiche la bonne reponse, une courte explication si activee et le classement provisoire. A la fin, elle affiche le classement final.
+Tous les joueurs recoivent le meme set de questions pour la partie. Pendant le chrono, une reponse est seulement enregistree. Quand le chrono arrive a zero, le serveur calcule les points, affiche la bonne reponse, une courte explication si activee et le classement provisoire. A la fin, il affiche le classement final.
 
 Endpoints :
 
@@ -142,6 +142,7 @@ Endpoints :
 POST /api/rooms
 GET /api/rooms
 GET /api/rooms/:id
+GET /api/rooms/:roomCode/state?participantId=...
 POST /api/rooms/:id/join
 POST /api/rooms/:id/leave
 POST /api/rooms/:id/start-round
@@ -151,6 +152,25 @@ GET /api/rooms/:id/leaderboard
 POST /api/rooms/:id/close
 POST /api/ai/generate-round-questions
 POST /api/ai/validate-questions
+```
+
+Synchronisation :
+
+- le serveur est la source de verite pour la phase, le chrono, la question active, les reponses et les scores ;
+- le frontend restaure le salon apres refresh via `localStorage` puis `GET /api/rooms/:roomCode/state?participantId=...` ;
+- le frontend utilise un polling court si WebSocket n'est pas disponible ;
+- les points restent a `0` jusqu'a la fin du chrono ;
+- apres correction, une pause de preparation lance automatiquement la question suivante.
+
+Phases serveur :
+
+```text
+waiting
+starting
+question_active
+question_reveal
+between_questions
+finished
 ```
 
 Scoring competition :
