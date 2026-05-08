@@ -1,0 +1,185 @@
+# Quiz Bible
+
+Quiz Bible est une application web mobile-first pour apprendre la Bible en jouant : categories Ancien/Nouveau Testament, niveaux progressifs, questions chronometrees, challenges d'etude, scores, classement et explications apres chaque reponse.
+
+## Fonctionnalites
+
+- Modes de jeu par categorie : Pentateuque, Evangiles, Actes, Epitres, Apocalypse, personnages, contexte historique, etc.
+- Niveaux : debutant, intermediaire, avance, expert.
+- Parties de 5, 10, 15 ou 20 questions avec limite de 15, 30, 45 ou 60 secondes.
+- Score : +10 pour une bonne reponse, bonus vitesse jusqu'a +5.
+- Explication, bonne reponse et reference biblique apres chaque question.
+- Challenges 7 jours : Moise, David, Daniel, Paul, prophetes majeurs, paraboles, miracles, femmes importantes, rois, empires.
+- Classement local.
+- Admin protege par identifiants serveur.
+- Generation optionnelle de questions avec Azure OpenAI, avec fallback local si Azure n'est pas configure.
+
+## Stack
+
+- Node.js 18+ sans dependance externe.
+- Frontend statique HTML/CSS/JavaScript.
+- Donnees JSON locales dans `data/`.
+- Reverse proxy Nginx pour `quizbible.traillearn.org`.
+
+## Variables d'environnement
+
+Copier `.env.example` vers `.env` :
+
+```bash
+PORT=5174
+APP_BASE_URL=https://quizbible.traillearn.org
+
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_DEPLOYMENT=
+AZURE_OPENAI_API_VERSION=
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-me
+```
+
+Ne jamais exposer les variables Azure dans le frontend. Elles sont uniquement lues par `server.js`.
+
+## Installation
+
+```bash
+npm install
+```
+
+Le projet n'a actuellement aucune dependance npm, mais la commande reste compatible avec un deploiement Node standard.
+
+## Lancement local
+
+```bash
+npm run dev
+```
+
+Puis ouvrir :
+
+```text
+http://localhost:5174
+```
+
+Admin :
+
+```text
+http://localhost:5174/admin
+```
+
+## Build / validation
+
+```bash
+npm run build
+```
+
+Cette commande verifie les fichiers requis et la validite JSON des donnees.
+
+## API principale
+
+`POST /api/generate-questions`
+
+Entree :
+
+```json
+{
+  "category": "evangiles",
+  "level": "intermediaire",
+  "count": 10,
+  "questionTypes": ["qcm", "vrai_faux", "personnage"]
+}
+```
+
+Sortie :
+
+```json
+{
+  "questions": [
+    {
+      "id": "...",
+      "question": "...",
+      "type": "qcm",
+      "options": ["...", "...", "...", "..."],
+      "correctAnswer": "...",
+      "explanation": "...",
+      "reference": "Daniel 2",
+      "difficulty": "intermediaire",
+      "category": "livres prophetiques"
+    }
+  ]
+}
+```
+
+Si Azure OpenAI n'est pas configure, l'API renvoie des questions locales actives.
+
+## Azure OpenAI
+
+Le serveur appelle l'API Chat Completions Azure avec le prompt systeme suivant :
+
+```text
+Tu es un generateur de quiz biblique pedagogique. Genere uniquement des questions bibliques fiables, claires, non ambigues, avec une bonne reponse exacte, des distracteurs plausibles, une explication courte et une reference biblique si possible. Ne genere pas de doctrine controversee comme verite absolue. Pour les questions historiques, distingue clairement le texte biblique du contexte historique issu des Bibles d etude. Reponds uniquement en JSON valide.
+```
+
+Validation cote serveur :
+
+- champs obligatoires presents ;
+- options presentes ;
+- bonne reponse incluse dans les options ;
+- QCM limite a 4 options ;
+- nettoyage simple des entrees utilisateur ;
+- rate limiting simple sur la generation IA.
+
+## Admin
+
+La page `/admin` permet :
+
+- voir les questions ;
+- ajouter, modifier, supprimer et activer/desactiver une question ;
+- voir les categories ;
+- voir les parties jouees et scores ;
+- voir, creer, modifier et supprimer les challenges ;
+- tester la generation Azure OpenAI via le bouton `Generer 20 questions`.
+
+Les identifiants viennent de :
+
+```text
+ADMIN_USERNAME
+ADMIN_PASSWORD
+```
+
+## Deploiement Nginx
+
+1. Lancer l'application Node sur le serveur, par exemple avec systemd ou PM2 :
+
+```bash
+PORT=5174 npm start
+```
+
+2. Copier `deploy/nginx.quizbible.conf` dans `/etc/nginx/sites-available/quizbible.traillearn.org`.
+
+3. Activer le site :
+
+```bash
+sudo ln -s /etc/nginx/sites-available/quizbible.traillearn.org /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+4. Ajouter SSL :
+
+```bash
+sudo certbot --nginx -d quizbible.traillearn.org
+```
+
+## Roadmap V2
+
+- Mode multijoueur.
+- Salles privees.
+- Quiz en direct pour groupes bibliques.
+- Import de questions CSV.
+- Export des scores.
+- Badges et trophees.
+- Compte utilisateur.
+- Sauvegarde de progression.
+- Mode Etude avant quiz.
+- Mode Verset a memoriser.
+- Support FR/EN.
