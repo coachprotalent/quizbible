@@ -31,6 +31,10 @@ const competition = {
 };
 
 let questionBanks = [];
+let operatorBanks = [];
+let operatorChallenges = [];
+let operatorTargetType = 'bank';
+let operatorTargetId = '';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -47,6 +51,7 @@ async function init() {
   handleInitialHash();
   restoreCompetitionSession();
   if (location.pathname === '/admin') showView('admin');
+  if (location.pathname === '/operator') showView('operator');
 }
 
 function handleInitialHash() {
@@ -73,6 +78,7 @@ function showView(view) {
   if (view === 'leaderboard') loadLeaderboard();
   if (view === 'challenges') loadChallenges();
   if (view === 'competition') loadRooms();
+  if (view === 'operator') loadOperator().catch(() => {});
 }
 
 function bindForms() {
@@ -81,12 +87,15 @@ function bindForms() {
   $('#adminLogin').addEventListener('submit', adminLogin);
   $('#adminLogout').addEventListener('click', adminLogout);
   $('#adminRefresh').addEventListener('click', loadAdmin);
-  $('#adminGenerate').addEventListener('click', adminGenerate);
-  $('#questionEditor').addEventListener('submit', addQuestion);
+  $('#adminUserEditor').addEventListener('submit', adminCreateUser);
   $('#challengeEditor').addEventListener('submit', addChallenge);
   $('#bankEditor').addEventListener('submit', addQuestionBank);
-  $('#bankQuestionEditor').addEventListener('submit', addBankQuestion);
-  $('#questionCancel').addEventListener('click', resetQuestionEditor);
+  $('#operatorLogin').addEventListener('submit', operatorLogin);
+  $('#operatorLogout').addEventListener('click', operatorLogout);
+  $('#operatorRefresh').addEventListener('click', loadOperator);
+  $('#operatorManualQuestion').addEventListener('submit', operatorAddManualQuestion);
+  $('#operatorGenerateTheme').addEventListener('submit', operatorGenerateQuestions);
+  $('#operatorGenerateText').addEventListener('submit', operatorGenerateQuestions);
   $('#challengeCancel').addEventListener('click', resetChallengeEditor);
   $('#roomCreateForm').addEventListener('submit', createRoom);
   $('#roomJoinForm').addEventListener('submit', joinRoomByCode);
@@ -104,11 +113,13 @@ function fillSelects() {
   const categoryOptions = state.meta.categories.map((category) => `<option value="${escapeHtml(category.id)}">${escapeHtml(category.label)}</option>`).join('');
   const levelOptions = state.meta.levels.map((level) => `<option value="${escapeHtml(level.id)}">${escapeHtml(level.label)}</option>`).join('');
   const typeOptions = state.meta.questionTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
-  ['#categorySelect', '#adminCategorySelect', '#challengeCategorySelect', '#roomCategorySelect'].forEach((selector) => $(selector).innerHTML = categoryOptions);
-  ['#levelSelect', '#adminLevelSelect', '#challengeLevelSelect', '#roomLevelSelect'].forEach((selector) => $(selector).innerHTML = levelOptions);
+  ['#categorySelect', '#challengeCategorySelect', '#roomCategorySelect', '#operatorThemeCategory'].forEach((selector) => $(selector).innerHTML = categoryOptions);
+  ['#levelSelect', '#challengeLevelSelect', '#roomLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'].forEach((selector) => $(selector).innerHTML = levelOptions);
   $('#bankCategorySelect').innerHTML = categoryOptions;
   $('#bankLevelSelect').innerHTML = levelOptions;
-  $('#adminTypeSelect').innerHTML = typeOptions;
+  $('#operatorManualType').innerHTML = typeOptions;
+  $('#operatorThemeType').innerHTML = typeOptions;
+  $('#operatorTextType').innerHTML = typeOptions;
   $('#roomQuestionTypes').innerHTML = typeOptions;
   $('#roomCategorySelect').value = 'random';
   $('#roomLevelSelect').value = 'intermediaire';
@@ -650,6 +661,192 @@ async function adminLogout() {
   $('#adminLogin').classList.remove('hidden');
 }
 
+async function operatorLogin(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  try {
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: { email: form.get('email'), password: form.get('password') }
+    });
+    $('#operatorLogin').classList.add('hidden');
+    $('#operatorPanel').classList.remove('hidden');
+    await loadOperator();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function operatorLogout() {
+  await api('/api/auth/logout', { method: 'POST', body: {} });
+  $('#operatorPanel').classList.add('hidden');
+  $('#operatorLogin').classList.remove('hidden');
+}
+
+async function loadOperator() {
+  const [banksData, challengesData] = await Promise.all([
+    api('/api/operator/question-banks'),
+    api('/api/operator/challenges')
+  ]);
+  operatorBanks = banksData.questionBanks || [];
+  operatorChallenges = challengesData.challenges || [];
+  $('#operatorLogin').classList.add('hidden');
+  $('#operatorPanel').classList.remove('hidden');
+  $('#operatorBanks').innerHTML = operatorBanks.map((bank) => `
+    <article class="admin-item">
+      <strong>${escapeHtml(bank.title)}</strong>
+      <p>${escapeHtml(bank.category)} - ${escapeHtml(bank.difficulty)}</p>
+      <button class="secondary" data-operator-target-type="bank" data-operator-target-id="${escapeHtml(bank.id)}">Ouvrir</button>
+    </article>
+  `).join('') || '<p>Aucune banque autorisee.</p>';
+  $('#operatorChallenges').innerHTML = operatorChallenges.map((challenge) => `
+    <article class="admin-item">
+      <strong>${escapeHtml(challenge.title)}</strong>
+      <p>${escapeHtml(challenge.category)} - ${escapeHtml(challenge.level)}</p>
+      <button class="secondary" data-operator-target-type="challenge" data-operator-target-id="${escapeHtml(challenge.id)}">Ouvrir</button>
+    </article>
+  `).join('') || '<p>Aucun challenge autorise.</p>';
+  updateOperatorTargets();
+  $$('[data-operator-target-id]').forEach((button) => button.addEventListener('click', () => selectOperatorTarget(button.dataset.operatorTargetType, button.dataset.operatorTargetId)));
+  if (!operatorTargetId) {
+    const first = operatorBanks[0] ? ['bank', operatorBanks[0].id] : (operatorChallenges[0] ? ['challenge', operatorChallenges[0].id] : []);
+    if (first.length) await selectOperatorTarget(first[0], first[1]);
+  } else {
+    await loadOperatorQuestions();
+  }
+}
+
+function updateOperatorTargets() {
+  const options = [
+    ...operatorBanks.map((bank) => ({ type: 'bank', id: bank.id, label: `Banque - ${bank.title}` })),
+    ...operatorChallenges.map((challenge) => ({ type: 'challenge', id: challenge.id, label: `Challenge - ${challenge.title}` }))
+  ];
+  ['#operatorManualTarget', '#operatorThemeTarget', '#operatorTextTarget'].forEach((selector) => {
+    $(selector).innerHTML = options.map((item) => `<option value="${escapeHtml(item.type)}:${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('') || '<option value="">Aucun contenu</option>';
+  });
+}
+
+async function selectOperatorTarget(type, id) {
+  operatorTargetType = type;
+  operatorTargetId = id;
+  const value = `${type}:${id}`;
+  ['#operatorManualTarget', '#operatorThemeTarget', '#operatorTextTarget'].forEach((selector) => { if ($(selector)) $(selector).value = value; });
+  await loadOperatorQuestions();
+}
+
+function parseOperatorTarget(value) {
+  const [type, ...idParts] = String(value || '').split(':');
+  return { type, id: idParts.join(':') };
+}
+
+async function loadOperatorQuestions() {
+  if (!operatorTargetId) return;
+  const base = operatorTargetType === 'challenge' ? 'challenges' : 'question-banks';
+  const data = await api(`/api/operator/${base}/${encodeURIComponent(operatorTargetId)}/questions`);
+  $('#operatorQuestions').innerHTML = (data.questions || []).map((question) => `
+    <article class="admin-item">
+      <strong>${escapeHtml(question.question)}</strong>
+      <p>${escapeHtml(question.type)} - ${escapeHtml(question.difficulty || question.level)} - ${escapeHtml(question.status || (question.isActive ? 'active' : 'inactive'))}</p>
+      <p>${escapeHtml(question.reference || '')}</p>
+      <div class="admin-item-actions">
+        <button class="secondary" data-operator-edit="${escapeHtml(question.id)}">Modifier</button>
+        <button class="secondary" data-operator-publish="${escapeHtml(question.id)}">Publier</button>
+        <button class="secondary" data-operator-disable="${escapeHtml(question.id)}">Desactiver</button>
+        <button class="secondary" data-operator-delete="${escapeHtml(question.id)}">Supprimer</button>
+      </div>
+    </article>
+  `).join('') || '<p>Aucune question.</p>';
+  $$('[data-operator-publish]').forEach((button) => button.addEventListener('click', () => operatorPublishQuestion(button.dataset.operatorPublish)));
+  $$('[data-operator-edit]').forEach((button) => button.addEventListener('click', () => operatorEditQuestion(button.dataset.operatorEdit, data.questions.find((question) => question.id === button.dataset.operatorEdit))));
+  $$('[data-operator-disable]').forEach((button) => button.addEventListener('click', () => operatorPatchQuestion(button.dataset.operatorDisable, { status: 'inactive', isActive: false })));
+  $$('[data-operator-delete]').forEach((button) => button.addEventListener('click', () => operatorDeleteQuestion(button.dataset.operatorDelete)));
+}
+
+async function operatorAddManualQuestion(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const target = parseOperatorTarget(form.get('targetId'));
+  if (!target.id) return;
+  operatorTargetType = target.type;
+  operatorTargetId = target.id;
+  const base = target.type === 'challenge' ? 'challenges' : 'question-banks';
+  await api(`/api/operator/${base}/${encodeURIComponent(target.id)}/questions/manual`, {
+    method: 'POST',
+    body: operatorQuestionBody(form)
+  });
+  event.currentTarget?.reset?.();
+  updateOperatorTargets();
+  await loadOperatorQuestions();
+}
+
+async function operatorGenerateQuestions(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const target = parseOperatorTarget(form.get('targetId'));
+  if (!target.id) return;
+  operatorTargetType = target.type;
+  operatorTargetId = target.id;
+  const base = target.type === 'challenge' ? 'challenges' : 'question-banks';
+  const method = event.currentTarget.id === 'operatorGenerateText' ? 'generate-from-text' : 'generate-from-theme';
+  await api(`/api/operator/${base}/${encodeURIComponent(target.id)}/questions/${method}`, {
+    method: 'POST',
+    body: {
+      theme: form.get('theme'),
+      rawText: form.get('rawText'),
+      count: Number(form.get('count') || 5),
+      category: form.get('category'),
+      difficulty: form.get('difficulty'),
+      type: form.get('type'),
+      questionTypes: [form.get('type')],
+      instruction: form.get('instruction'),
+      textOnly: form.get('textOnly') === 'on'
+    }
+  });
+  await loadOperatorQuestions();
+}
+
+function operatorQuestionBody(form) {
+  return {
+    question: form.get('question'),
+    type: form.get('type'),
+    options: String(form.get('options') || '').split('|').map((item) => item.trim()).filter(Boolean),
+    correctAnswer: form.get('correctAnswer'),
+    explanation: form.get('explanation'),
+    reference: form.get('reference'),
+    difficulty: form.get('difficulty'),
+    tags: String(form.get('tags') || '').split(',').map((item) => item.trim()).filter(Boolean),
+    status: form.get('status'),
+    isActive: form.get('status') === 'active'
+  };
+}
+
+async function operatorPublishQuestion(id) {
+  await api(`/api/operator/questions/${encodeURIComponent(id)}/publish`, { method: 'POST', body: {} });
+  await loadOperatorQuestions();
+}
+
+async function operatorEditQuestion(id, question) {
+  if (!question) return;
+  const nextQuestion = prompt('Question', question.question);
+  if (nextQuestion === null) return;
+  const correctAnswer = prompt('Bonne reponse', question.correctAnswer || '');
+  if (correctAnswer === null) return;
+  const explanation = prompt('Explication', question.explanation || '');
+  if (explanation === null) return;
+  await operatorPatchQuestion(id, { ...question, question: nextQuestion, correctAnswer, explanation });
+}
+
+async function operatorPatchQuestion(id, patch) {
+  await api(`/api/operator/questions/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch });
+  await loadOperatorQuestions();
+}
+
+async function operatorDeleteQuestion(id) {
+  if (!confirm('Supprimer cette question ?')) return;
+  await api(`/api/operator/questions/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} });
+  await loadOperatorQuestions();
+}
+
 async function loadAdmin() {
   const data = await api('/api/admin/dashboard');
   questionBanks = data.questionBanks || questionBanks;
@@ -671,6 +868,8 @@ async function loadAdmin() {
       <p>${escapeHtml(challenge.category)} · ${escapeHtml(challenge.level)} · ${challenge.days} jours</p>
       <div class="admin-item-actions">
         <button class="secondary" data-edit-challenge="${escapeHtml(challenge.id)}">Modifier</button>
+        <button class="secondary" data-toggle-challenge="${escapeHtml(challenge.id)}">${challenge.isActive === false ? 'Publier' : 'Depublier'}</button>
+        <button class="secondary" data-assign-challenge="${escapeHtml(challenge.id)}">Operateurs</button>
         <button class="secondary" data-delete-challenge="${escapeHtml(challenge.id)}">Supprimer</button>
       </div>
     </article>
@@ -702,9 +901,10 @@ async function loadAdmin() {
       <p>${escapeHtml(user.email)} - ${escapeHtml(user.role)} - ${user.isActive === false ? 'desactive' : 'actif'}</p>
       <div class="admin-item-actions">
         <select data-user-role="${escapeHtml(user.id)}">
-          ${['admin', 'question_manager', 'host', 'player'].map((role) => `<option value="${role}" ${user.role === role ? 'selected' : ''}>${role}</option>`).join('')}
+          ${['admin', 'operator', 'host', 'player'].map((role) => `<option value="${role}" ${user.role === role ? 'selected' : ''}>${role}</option>`).join('')}
         </select>
         <button class="secondary" data-user-status="${escapeHtml(user.id)}">${user.isActive === false ? 'Activer' : 'Desactiver'}</button>
+        <button class="secondary" data-user-password="${escapeHtml(user.id)}">Mot de passe</button>
       </div>
     </article>
   `).join('') || '<p>Aucun utilisateur.</p>';
@@ -714,6 +914,12 @@ async function loadAdmin() {
       <article class="admin-item">
         <strong>${escapeHtml(bank.title)}</strong>
         <p>${escapeHtml(bank.category)} - ${escapeHtml(bank.difficulty)} - ${count} questions - ${bank.isPublic ? 'publique' : 'privee'}</p>
+        <p>Operateurs: ${escapeHtml((bank.operatorIds || []).join(', ') || 'aucun')}</p>
+        <div class="admin-item-actions">
+          <button class="secondary" data-bank-toggle="${escapeHtml(bank.id)}">${bank.isActive === false ? 'Publier' : 'Depublier'}</button>
+          <button class="secondary" data-bank-assign="${escapeHtml(bank.id)}">Operateurs</button>
+          <button class="secondary" data-bank-delete="${escapeHtml(bank.id)}">Supprimer</button>
+        </div>
       </article>
     `;
   }).join('') || '<p>Aucune banque.</p>';
@@ -722,12 +928,18 @@ async function loadAdmin() {
   $$('[data-delete]').forEach((button) => button.addEventListener('click', () => deleteQuestion(button.dataset.delete)));
   $$('[data-toggle]').forEach((button) => button.addEventListener('click', () => toggleQuestion(data.questions.find((q) => q.id === button.dataset.toggle))));
   $$('[data-edit-challenge]').forEach((button) => button.addEventListener('click', () => editChallenge(data.challenges.find((c) => c.id === button.dataset.editChallenge))));
+  $$('[data-toggle-challenge]').forEach((button) => button.addEventListener('click', () => toggleChallenge(data.challenges.find((c) => c.id === button.dataset.toggleChallenge))));
+  $$('[data-assign-challenge]').forEach((button) => button.addEventListener('click', () => adminAssignChallenge(data.challenges.find((c) => c.id === button.dataset.assignChallenge))));
   $$('[data-delete-challenge]').forEach((button) => button.addEventListener('click', () => deleteChallenge(button.dataset.deleteChallenge)));
   $$('[data-admin-room-close]').forEach((button) => button.addEventListener('click', () => adminCloseRoom(button.dataset.adminRoomClose)));
   $$('[data-admin-room-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteRoom(button.dataset.adminRoomDelete)));
   $$('[data-admin-room-regen]').forEach((button) => button.addEventListener('click', () => adminRegenerateRoom(button.dataset.adminRoomRegen)));
   $$('[data-user-role]').forEach((select) => select.addEventListener('change', () => adminUpdateUserRole(select.dataset.userRole, select.value)));
   $$('[data-user-status]').forEach((button) => button.addEventListener('click', () => adminToggleUserStatus(button.dataset.userStatus, data.users.find((user) => user.id === button.dataset.userStatus))));
+  $$('[data-user-password]').forEach((button) => button.addEventListener('click', () => adminResetUserPassword(button.dataset.userPassword)));
+  $$('[data-bank-toggle]').forEach((button) => button.addEventListener('click', () => adminToggleBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankToggle))));
+  $$('[data-bank-assign]').forEach((button) => button.addEventListener('click', () => adminAssignBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankAssign))));
+  $$('[data-bank-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteBank(button.dataset.bankDelete)));
 }
 
 async function addQuestion(event) {
@@ -768,18 +980,36 @@ async function addChallenge(event) {
 async function addQuestionBank(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  await api('/api/question-banks', {
+  await api('/api/admin/question-banks', {
     method: 'POST',
     body: {
       title: form.get('title'),
       description: form.get('description'),
       category: form.get('category'),
       difficulty: form.get('difficulty'),
+      operatorIds: form.get('operatorIds'),
       isPublic: form.get('isPublic') === 'on'
     }
   });
   event.currentTarget?.reset?.();
   await Promise.all([loadAdmin(), loadQuestionBanks()]);
+}
+
+async function adminCreateUser(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  await api('/api/admin/users', {
+    method: 'POST',
+    body: {
+      name: form.get('name'),
+      email: form.get('email'),
+      password: form.get('password'),
+      role: form.get('role'),
+      isActive: form.get('isActive') === 'on'
+    }
+  });
+  event.currentTarget?.reset?.();
+  await loadAdmin();
 }
 
 async function addBankQuestion(event) {
@@ -822,6 +1052,15 @@ async function toggleQuestion(question) {
   await loadAdmin();
 }
 
+async function toggleChallenge(challenge) {
+  if (!challenge) return;
+  await api(`/api/admin/challenges/${encodeURIComponent(challenge.id)}`, {
+    method: 'PUT',
+    body: { ...challenge, isActive: challenge.isActive === false }
+  });
+  await Promise.all([loadAdmin(), loadChallenges()]);
+}
+
 function editQuestion(question) {
   const form = $('#questionEditor');
   form.elements.id.value = question.id;
@@ -847,7 +1086,9 @@ function editChallenge(challenge) {
   form.elements.summary.value = challenge.summary || '';
   form.elements.category.value = challenge.category;
   form.elements.level.value = challenge.level;
+  form.elements.operatorIds.value = (challenge.operatorIds || []).join(', ');
   form.elements.days.value = challenge.days || 7;
+  form.elements.isActive.checked = challenge.isActive !== false;
   $('#challengeEditorTitle').textContent = 'Modifier le challenge';
   $('#challengeSubmit').textContent = 'Enregistrer';
   $('#challengeCancel').classList.remove('hidden');
@@ -894,12 +1135,47 @@ async function adminRegenerateRoom(id) {
 }
 
 async function adminUpdateUserRole(id, role) {
-  await api(`/api/users/${encodeURIComponent(id)}/role`, { method: 'PATCH', body: { role } });
+  await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: { role } });
   await loadAdmin();
 }
 
 async function adminToggleUserStatus(id, user) {
-  await api(`/api/users/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: { isActive: user?.isActive === false } });
+  await api(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: { isActive: user?.isActive === false } });
+  await loadAdmin();
+}
+
+async function adminResetUserPassword(id) {
+  const password = prompt('Nouveau mot de passe temporaire');
+  if (!password) return;
+  await api(`/api/admin/users/${encodeURIComponent(id)}/password`, { method: 'PATCH', body: { password } });
+  await loadAdmin();
+}
+
+async function adminToggleBank(bank) {
+  if (!bank) return;
+  await api(`/api/admin/question-banks/${encodeURIComponent(bank.id)}`, { method: 'PATCH', body: { ...bank, isActive: bank.isActive === false } });
+  await Promise.all([loadAdmin(), loadQuestionBanks()]);
+}
+
+async function adminAssignBank(bank) {
+  if (!bank) return;
+  const operatorIds = prompt('IDs operateurs separes par virgule', (bank.operatorIds || []).join(', '));
+  if (operatorIds === null) return;
+  await api(`/api/admin/question-banks/${encodeURIComponent(bank.id)}`, { method: 'PATCH', body: { ...bank, operatorIds } });
+  await loadAdmin();
+}
+
+async function adminDeleteBank(id) {
+  if (!confirm('Supprimer cette banque ?')) return;
+  await api(`/api/admin/question-banks/${encodeURIComponent(id)}`, { method: 'DELETE', body: {} });
+  await loadAdmin();
+}
+
+async function adminAssignChallenge(challenge) {
+  if (!challenge) return;
+  const operatorIds = prompt('IDs operateurs separes par virgule', (challenge.operatorIds || []).join(', '));
+  if (operatorIds === null) return;
+  await api(`/api/admin/challenges/${encodeURIComponent(challenge.id)}`, { method: 'PUT', body: { ...challenge, operatorIds } });
   await loadAdmin();
 }
 

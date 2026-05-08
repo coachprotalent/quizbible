@@ -248,6 +248,13 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname.startsWith('/api/operator/')) {
+    const user = requireRole(req, ['admin', 'operator']);
+    if (!user) return sendJson(res, 403, { error: 'Role operator requis' });
+    await handleOperatorApi(req, res, url, user);
+    return;
+  }
+
   const roundAnswerMatch = url.pathname.match(/^\/api\/rounds\/([^/]+)\/answer$/);
   if (roundAnswerMatch && req.method === 'POST') {
     const result = submitRoundAnswer(decodeURIComponent(roundAnswerMatch[1]), await readBody(req));
@@ -294,21 +301,22 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith('/api/admin/')) {
-    if (!isAdmin(req)) {
+    const user = requireRole(req, ['admin']);
+    if (!user) {
       sendJson(res, 401, { error: 'Connexion admin requise' });
       return;
     }
-    await handleAdminApi(req, res, url);
+    await handleAdminApi(req, res, url, user);
     return;
   }
 
   sendJson(res, 404, { error: 'Route introuvable' });
 }
 
-async function handleAdminApi(req, res, url) {
+async function handleAdminApi(req, res, url, adminUser) {
   if (req.method === 'GET' && url.pathname === '/api/admin/dashboard') {
     sendJson(res, 200, {
-      questions: readJson('questions.json'),
+      questions: [],
       challenges: readJson('challenges.json'),
       sessions: readJson('sessions.json'),
       leaderboard: readJson('leaderboard.json'),
@@ -320,6 +328,7 @@ async function handleAdminApi(req, res, url) {
       users: readJson('users.json').map(publicUser),
       questionBanks: readJson('questionBanks.json'),
       bankQuestions: readJson('bankQuestions.json'),
+      challengeQuestions: readJson('challengeQuestions.json'),
       aiErrors: readJson('aiErrors.json'),
       categories,
       levels
@@ -327,33 +336,58 @@ async function handleAdminApi(req, res, url) {
     return;
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/admin/questions') {
-    const body = sanitizeQuestion(await readBody(req));
-    const questions = readJson('questions.json');
-    body.id = body.id || `q-${crypto.randomUUID()}`;
-    body.createdAt = body.createdAt || new Date().toISOString();
-    questions.push(body);
-    writeJson('questions.json', questions);
-    sendJson(res, 201, { question: body });
+  if (req.method === 'GET' && url.pathname === '/api/admin/users') {
+    sendJson(res, 200, { users: readJson('users.json').map(publicUser) });
     return;
   }
 
-  const questionMatch = url.pathname.match(/^\/api\/admin\/questions\/([^/]+)$/);
-  if (questionMatch && req.method === 'PUT') {
-    const id = decodeURIComponent(questionMatch[1]);
-    const body = sanitizeQuestion(await readBody(req));
-    const questions = readJson('questions.json');
-    const index = questions.findIndex((q) => q.id === id);
-    if (index === -1) return sendJson(res, 404, { error: 'Question introuvable' });
-    questions[index] = { ...questions[index], ...body, id };
-    writeJson('questions.json', questions);
-    sendJson(res, 200, { question: questions[index] });
+  if (req.method === 'POST' && url.pathname === '/api/admin/users') {
+    const result = createUserByAdmin(await readBody(req));
+    if (result.error) return sendJson(res, result.status || 400, { error: result.error });
+    sendJson(res, 201, { user: publicUser(result.user) });
     return;
   }
 
-  if (questionMatch && req.method === 'DELETE') {
-    const id = decodeURIComponent(questionMatch[1]);
-    writeJson('questions.json', readJson('questions.json').filter((q) => q.id !== id));
+  const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)(?:\/(password|disable))?$/);
+  if (adminUserMatch && req.method === 'PATCH') {
+    const result = patchUserByAdmin(decodeURIComponent(adminUserMatch[1]), adminUserMatch[2] || 'profile', await readBody(req));
+    if (result.error) return sendJson(res, result.status || 400, { error: result.error });
+    sendJson(res, 200, { user: publicUser(result.user) });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/question-banks') {
+    sendJson(res, 200, { questionBanks: readJson('questionBanks.json') });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/admin/question-banks') {
+    const bank = sanitizeQuestionBank(await readBody(req), adminUser);
+    const banks = readJson('questionBanks.json');
+    bank.id = `qb-${crypto.randomUUID()}`;
+    bank.createdAt = new Date().toISOString();
+    bank.updatedAt = bank.createdAt;
+    banks.push(bank);
+    writeJson('questionBanks.json', banks);
+    sendJson(res, 201, { questionBank: bank });
+    return;
+  }
+
+  const adminBankMatch = url.pathname.match(/^\/api\/admin\/question-banks\/([^/]+)$/);
+  if (adminBankMatch && req.method === 'PATCH') {
+    const banks = readJson('questionBanks.json');
+    const bank = banks.find((item) => item.id === decodeURIComponent(adminBankMatch[1]));
+    if (!bank) return sendJson(res, 404, { error: 'Banque introuvable' });
+    Object.assign(bank, sanitizeQuestionBank({ ...bank, ...(await readBody(req)) }, { id: bank.createdBy }), { id: bank.id, createdBy: bank.createdBy, createdAt: bank.createdAt, updatedAt: new Date().toISOString() });
+    writeJson('questionBanks.json', banks);
+    sendJson(res, 200, { questionBank: bank });
+    return;
+  }
+
+  if (adminBankMatch && req.method === 'DELETE') {
+    const id = decodeURIComponent(adminBankMatch[1]);
+    writeJson('questionBanks.json', readJson('questionBanks.json').filter((item) => item.id !== id));
+    writeJson('bankQuestions.json', readJson('bankQuestions.json').filter((question) => question.bankId !== id));
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -369,8 +403,13 @@ async function handleAdminApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/admin/challenges') {
+    sendJson(res, 200, { challenges: readJson('challenges.json') });
+    return;
+  }
+
   const challengeMatch = url.pathname.match(/^\/api\/admin\/challenges\/([^/]+)$/);
-  if (challengeMatch && req.method === 'PUT') {
+  if (challengeMatch && (req.method === 'PUT' || req.method === 'PATCH')) {
     const id = decodeURIComponent(challengeMatch[1]);
     const body = sanitizeChallenge(await readBody(req));
     const challenges = readJson('challenges.json');
@@ -386,16 +425,6 @@ async function handleAdminApi(req, res, url) {
     const id = decodeURIComponent(challengeMatch[1]);
     writeJson('challenges.json', readJson('challenges.json').filter((c) => c.id !== id));
     sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/admin/generate-questions') {
-    const body = await readBody(req);
-    const generated = await generateQuestions({ ...body, count: body.count || 20 });
-    const questions = readJson('questions.json');
-    const saved = generated.map((q) => sanitizeQuestion({ ...q, id: q.id || `q-${crypto.randomUUID()}`, isActive: true, createdAt: new Date().toISOString() }));
-    writeJson('questions.json', questions.concat(saved));
-    sendJson(res, 200, { questions: saved });
     return;
   }
 
@@ -425,6 +454,106 @@ async function handleAdminApi(req, res, url) {
   }
 
   sendJson(res, 404, { error: 'Route admin introuvable' });
+}
+
+async function handleOperatorApi(req, res, url, user) {
+  if (req.method === 'GET' && url.pathname === '/api/operator/question-banks') {
+    const banks = readJson('questionBanks.json').filter((bank) => canOperateStructure(user, bank));
+    sendJson(res, 200, { questionBanks: banks });
+    return;
+  }
+
+  const bankQuestionsMatch = url.pathname.match(/^\/api\/operator\/question-banks\/([^/]+)\/questions(?:\/(manual|generate-from-theme|generate-from-text))?$/);
+  if (bankQuestionsMatch) {
+    const bank = readJson('questionBanks.json').find((item) => item.id === decodeURIComponent(bankQuestionsMatch[1]));
+    if (!bank || !canOperateStructure(user, bank)) return sendJson(res, 403, { error: 'Banque non autorisee' });
+    const method = bankQuestionsMatch[2] || '';
+    if (req.method === 'GET') {
+      return sendJson(res, 200, { questions: readJson('bankQuestions.json').filter((question) => question.bankId === bank.id) });
+    }
+    if (req.method === 'POST' && method === 'manual') {
+      const questions = readJson('bankQuestions.json');
+      const question = sanitizeBankQuestion({ ...(await readBody(req)), status: 'active' }, bank.id);
+      question.id = `bq-${crypto.randomUUID()}`;
+      questions.push(question);
+      writeJson('bankQuestions.json', questions);
+      return sendJson(res, 201, { question });
+    }
+    if (req.method === 'POST' && ['generate-from-theme', 'generate-from-text'].includes(method)) {
+      const generated = await generateOperatorDrafts(await readBody(req), method);
+      const questions = readJson('bankQuestions.json');
+      const saved = generated.map((item) => ({ ...sanitizeBankQuestion({ ...item, status: 'draft' }, bank.id), id: `bq-${crypto.randomUUID()}` }));
+      writeJson('bankQuestions.json', questions.concat(saved));
+      return sendJson(res, 201, { questions: saved });
+    }
+  }
+
+  const operatorQuestionMatch = url.pathname.match(/^\/api\/operator\/questions\/([^/]+)(?:\/publish)?$/);
+  if (operatorQuestionMatch) {
+    const questionId = decodeURIComponent(operatorQuestionMatch[1]);
+    const bankQuestions = readJson('bankQuestions.json');
+    const challengeQuestions = readJson('challengeQuestions.json');
+    let questions = bankQuestions;
+    let question = bankQuestions.find((item) => item.id === questionId);
+    let structure = question && readJson('questionBanks.json').find((item) => item.id === question.bankId);
+    let file = 'bankQuestions.json';
+    if (!question) {
+      questions = challengeQuestions;
+      question = challengeQuestions.find((item) => item.id === questionId);
+      structure = question && readJson('challenges.json').find((item) => item.id === question.challengeId);
+      file = 'challengeQuestions.json';
+    }
+    if (!question || !structure || !canOperateStructure(user, structure)) return sendJson(res, 404, { error: 'Question introuvable' });
+    if (req.method === 'PATCH') {
+      const patch = question.bankId ? sanitizeBankQuestion(await readBody(req), question.bankId) : sanitizeChallengeQuestion(await readBody(req), question.challengeId);
+      Object.assign(question, patch, { id: question.id, bankId: question.bankId, challengeId: question.challengeId });
+      writeJson(file, questions);
+      return sendJson(res, 200, { question });
+    }
+    if (req.method === 'DELETE') {
+      writeJson(file, questions.filter((item) => item.id !== question.id));
+      return sendJson(res, 200, { ok: true });
+    }
+    if (req.method === 'POST' && url.pathname.endsWith('/publish')) {
+      question.status = 'active';
+      question.isActive = true;
+      writeJson(file, questions);
+      return sendJson(res, 200, { question });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/operator/challenges') {
+    const challenges = readJson('challenges.json').filter((challenge) => canOperateStructure(user, challenge));
+    sendJson(res, 200, { challenges });
+    return;
+  }
+
+  const challengeQuestionsMatch = url.pathname.match(/^\/api\/operator\/challenges\/([^/]+)\/questions(?:\/(manual|generate-from-theme|generate-from-text))?$/);
+  if (challengeQuestionsMatch) {
+    const challenge = readJson('challenges.json').find((item) => item.id === decodeURIComponent(challengeQuestionsMatch[1]));
+    if (!challenge || !canOperateStructure(user, challenge)) return sendJson(res, 403, { error: 'Challenge non autorise' });
+    const method = challengeQuestionsMatch[2] || '';
+    if (req.method === 'GET') {
+      return sendJson(res, 200, { questions: readJson('challengeQuestions.json').filter((question) => question.challengeId === challenge.id) });
+    }
+    if (req.method === 'POST' && method === 'manual') {
+      const questions = readJson('challengeQuestions.json');
+      const question = sanitizeChallengeQuestion({ ...(await readBody(req)), status: 'active' }, challenge.id);
+      question.id = `cq-${crypto.randomUUID()}`;
+      questions.push(question);
+      writeJson('challengeQuestions.json', questions);
+      return sendJson(res, 201, { question });
+    }
+    if (req.method === 'POST' && ['generate-from-theme', 'generate-from-text'].includes(method)) {
+      const generated = await generateOperatorDrafts(await readBody(req), method);
+      const questions = readJson('challengeQuestions.json');
+      const saved = generated.map((item) => ({ ...sanitizeChallengeQuestion({ ...item, status: 'draft' }, challenge.id), id: `cq-${crypto.randomUUID()}` }));
+      writeJson('challengeQuestions.json', questions.concat(saved));
+      return sendJson(res, 201, { questions: saved });
+    }
+  }
+
+  sendJson(res, 404, { error: 'Route operator introuvable' });
 }
 
 async function handleRoomAction(req, res, match, url) {
@@ -509,8 +638,8 @@ async function handleQuestionBankApi(req, res, match) {
     return;
   }
   if (!bankId && req.method === 'POST') {
-    const user = requireRole(req, ['admin', 'question_manager']);
-    if (!user) return sendJson(res, 403, { error: 'Role question_manager requis' });
+    const user = requireRole(req, ['admin', 'operator']);
+    if (!user) return sendJson(res, 403, { error: 'Role operator requis' });
     const bank = sanitizeQuestionBank(await readBody(req), user);
     const banks = readJson('questionBanks.json');
     bank.id = `qb-${crypto.randomUUID()}`;
@@ -1342,7 +1471,7 @@ function appendJson(file, item) {
 }
 
 function serveStatic(req, res, pathname) {
-  const cleanPath = pathname === '/' || pathname === '/admin' ? '/index.html' : pathname;
+  const cleanPath = pathname === '/' || pathname === '/admin' || pathname === '/operator' ? '/index.html' : pathname;
   const fullPath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
   if (!fullPath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -1532,6 +1661,10 @@ async function generateQuestions(input) {
     level,
     count,
     questionTypes: requestedTypes,
+    theme: sanitizeString(input.theme || '').slice(0, 200),
+    sourceText: sanitizeString(input.sourceText || '').slice(0, 6000),
+    instruction: sanitizeString(input.instruction || '').slice(0, 800),
+    textOnly: Boolean(input.textOnly),
     outputShape: {
       questions: [{
         id: 'string',
@@ -1561,7 +1694,7 @@ async function generateQuestions(input) {
       messages: [
         {
           role: 'system',
-          content: 'Tu es un generateur de quiz biblique pedagogique. Genere uniquement des questions bibliques fiables, claires, non ambigues, avec une bonne reponse exacte, des distracteurs plausibles, une explication courte et une reference biblique si possible. Ne genere pas de doctrine controversee comme verite absolue. Pour les questions historiques, distingue clairement le texte biblique du contexte historique issu des Bibles d etude. Reponds uniquement en JSON valide.'
+          content: 'Tu es un generateur de quiz biblique pedagogique. Genere uniquement des questions bibliques fiables, claires, non ambigues, avec une bonne reponse exacte, des distracteurs plausibles, une explication courte et une reference biblique si possible. Ne genere pas de doctrine controversee comme verite absolue. Pour les questions historiques, distingue clairement le texte biblique du contexte historique issu des Bibles d etude. Si textOnly est vrai, n utilise que les informations presentes dans sourceText. Reponds uniquement en JSON valide.'
         },
         { role: 'user', content: JSON.stringify(prompt) }
       ],
@@ -1592,6 +1725,27 @@ async function generateQuestions(input) {
     createdAt: new Date().toISOString()
   })).filter(validateQuestion);
   return valid.length ? valid.slice(0, count) : selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+}
+
+async function generateOperatorDrafts(input, method) {
+  const count = clamp(Number(input.count || 5), 1, 20);
+  const generated = await generateQuestions({
+    category: input.category || 'random',
+    level: input.difficulty || input.level || 'intermediaire',
+    count,
+    questionTypes: Array.isArray(input.questionTypes) ? input.questionTypes : [input.type || 'qcm'],
+    theme: input.theme,
+    sourceText: method === 'generate-from-text' ? input.rawText || input.text : '',
+    instruction: input.instruction || input.instructions || '',
+    textOnly: input.textOnly
+  });
+  return generated.map((question) => ({
+    ...question,
+    status: 'draft',
+    isActive: false,
+    aiValidationStatus: question.aiValidationStatus || 'draft_generated',
+    aiValidationNotes: method === 'generate-from-text' && input.textOnly ? 'Genere en mode base uniquement sur le texte fourni' : 'Brouillon genere par IA'
+  }));
 }
 
 function azureConfigured() {
@@ -1638,6 +1792,7 @@ function sanitizeChallenge(body) {
     days: clamp(Number(body.days || 7), 1, 30),
     progression: clamp(Number(body.progression || 0), 0, 100),
     summary: sanitizeString(body.summary || '').slice(0, 500),
+    operatorIds: parseList(body.operatorIds),
     isActive: body.isActive !== false,
     createdAt: body.createdAt || new Date().toISOString()
   };
@@ -1651,6 +1806,7 @@ function sanitizeQuestionBank(body, user) {
     difficulty: sanitizeString(body.difficulty || body.level || 'intermediaire').slice(0, 80),
     language: sanitizeString(body.language || 'fr').slice(0, 20),
     createdBy: sanitizeString(body.createdBy || user?.id || '').slice(0, 100),
+    operatorIds: parseList(body.operatorIds),
     isPublic: body.isPublic !== false,
     isActive: body.isActive !== false
   };
@@ -1670,8 +1826,20 @@ function sanitizeBankQuestion(body, bankId) {
     category: question.category,
     difficulty: question.level,
     tags: Array.isArray(body.tags) ? body.tags.map((tag) => sanitizeString(tag).slice(0, 40)).filter(Boolean).slice(0, 12) : [],
-    isActive: question.isActive
+    status: ['draft', 'active', 'inactive', 'rejected'].includes(body.status) ? body.status : (question.isActive ? 'active' : 'inactive'),
+    isActive: body.status ? body.status === 'active' : question.isActive
   };
+}
+
+function sanitizeChallengeQuestion(body, challengeId) {
+  const question = sanitizeBankQuestion(body, '');
+  delete question.bankId;
+  return { ...question, challengeId };
+}
+
+function parseList(value) {
+  if (Array.isArray(value)) return value.map((item) => sanitizeString(item).slice(0, 100)).filter(Boolean);
+  return sanitizeString(value || '').split(',').map((item) => item.trim()).filter(Boolean).slice(0, 50);
 }
 
 function registerUser(body) {
@@ -1682,7 +1850,8 @@ function registerUser(body) {
   if (!email || !email.includes('@')) return { error: 'Email invalide', status: 400 };
   if (password.length < 6) return { error: 'Mot de passe trop court', status: 400 };
   if (users.some((user) => user.email === email)) return { error: 'Utilisateur deja existant', status: 409 };
-  const role = users.length === 0 ? 'admin' : 'player';
+  const requestedRole = sanitizeString(body.role || '');
+  const role = users.length === 0 ? 'admin' : (['operator', 'host', 'player'].includes(requestedRole) ? requestedRole : 'player');
   const user = {
     id: `user-${crypto.randomUUID()}`,
     name,
@@ -1699,8 +1868,8 @@ function registerUser(body) {
 }
 
 function loginUser(body) {
-  const email = sanitizeString(body.email || body.username || '').toLowerCase();
-  const user = readJson('users.json').find((item) => item.email === email);
+  const login = sanitizeString(body.email || body.username || '').toLowerCase();
+  const user = readJson('users.json').find((item) => item.email === login || normalize(item.name) === normalize(login));
   if (!user || !user.isActive || user.passwordHash !== hashPassword(String(body.password || ''))) return { error: 'Identifiants invalides', status: 401 };
   return { user };
 }
@@ -1711,10 +1880,59 @@ function updateUserAdmin(userId, field, body) {
   if (!user) return { error: 'Utilisateur introuvable', status: 404 };
   if (field === 'role') {
     const role = sanitizeString(body.role || '');
-    if (!['admin', 'question_manager', 'host', 'player'].includes(role)) return { error: 'Role invalide', status: 400 };
+    if (!['admin', 'operator', 'host', 'player'].includes(role)) return { error: 'Role invalide', status: 400 };
     user.role = role;
   }
   if (field === 'status') user.isActive = body.isActive !== false;
+  user.updatedAt = new Date().toISOString();
+  writeJson('users.json', users);
+  return { user };
+}
+
+function createUserByAdmin(body) {
+  const users = readJson('users.json');
+  const email = sanitizeString(body.email || body.username || '').toLowerCase();
+  const password = String(body.password || '');
+  const role = sanitizeString(body.role || 'player');
+  if (!email) return { error: 'Email ou username requis', status: 400 };
+  if (password.length < 6) return { error: 'Mot de passe temporaire trop court', status: 400 };
+  if (!['admin', 'operator', 'host', 'player'].includes(role)) return { error: 'Role invalide', status: 400 };
+  if (users.some((user) => user.email === email)) return { error: 'Utilisateur deja existant', status: 409 };
+  const user = {
+    id: `user-${crypto.randomUUID()}`,
+    name: sanitizeString(body.name || email).slice(0, 80),
+    email,
+    passwordHash: hashPassword(password),
+    role,
+    isActive: body.isActive !== false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  users.push(user);
+  writeJson('users.json', users);
+  return { user };
+}
+
+function patchUserByAdmin(userId, action, body) {
+  const users = readJson('users.json');
+  const user = users.find((item) => item.id === userId);
+  if (!user) return { error: 'Utilisateur introuvable', status: 404 };
+  if (action === 'password') {
+    const password = String(body.password || '');
+    if (password.length < 6) return { error: 'Mot de passe trop court', status: 400 };
+    user.passwordHash = hashPassword(password);
+  } else if (action === 'disable') {
+    user.isActive = false;
+  } else {
+    if (body.name !== undefined) user.name = sanitizeString(body.name).slice(0, 80);
+    if (body.email !== undefined || body.username !== undefined) user.email = sanitizeString(body.email || body.username).toLowerCase();
+    if (body.role !== undefined) {
+      const role = sanitizeString(body.role);
+      if (!['admin', 'operator', 'host', 'player'].includes(role)) return { error: 'Role invalide', status: 400 };
+      user.role = role;
+    }
+    if (body.isActive !== undefined) user.isActive = body.isActive !== false;
+  }
   user.updatedAt = new Date().toISOString();
   writeJson('users.json', users);
   return { user };
@@ -1748,7 +1966,12 @@ function requireRole(req, roles) {
 function canManageBank(req, bank) {
   const user = currentUser(req);
   if (isAdmin(req) || user?.role === 'admin') return true;
-  return user?.role === 'question_manager' && bank.createdBy === user.id;
+  return user?.role === 'operator' && (bank.createdBy === user.id || (bank.operatorIds || []).includes(user.id));
+}
+
+function canOperateStructure(user, item) {
+  if (user?.role === 'admin') return true;
+  return user?.role === 'operator' && (item.createdBy === user.id || (item.operatorIds || []).includes(user.id));
 }
 
 function publicUser(user) {

@@ -19,6 +19,7 @@
         <button data-view="competition">Competition</button>
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
+        <button data-view="operator">Operateur</button>
         <button data-view="admin">Admin</button>
       </nav>
       <button class="theme-toggle" id="themeToggle" aria-label="Changer de theme">☾</button>
@@ -256,7 +257,7 @@
       <section class="view shell" id="adminView">
         <div class="section-head">
           <p class="eyebrow">Administration</p>
-          <h2>Questions, scores et challenges</h2>
+          <h2>Utilisateurs, salons et structures</h2>
         </div>
         <form class="admin-login" id="adminLogin">
           <input name="username" placeholder="Utilisateur" autocomplete="username" required>
@@ -264,30 +265,30 @@
           <button class="primary" type="submit">Connexion</button>
         </form>
         <div class="admin-panel hidden" id="adminPanel">
+          <div class="hidden" id="adminQuestions"></div>
+          <select class="hidden" id="bankQuestionBankSelect"></select>
           <div class="admin-actions">
             <button class="secondary" id="adminRefresh" type="button">Rafraichir</button>
-            <button class="secondary" id="adminGenerate" type="button">Generer 20 questions</button>
             <button class="secondary" id="adminLogout" type="button">Deconnexion</button>
           </div>
           <div class="admin-layout">
-            <form class="editor" id="questionEditor">
-              <h3 id="questionEditorTitle">Ajouter une question</h3>
-              <input name="id" type="hidden">
-              <input name="question" placeholder="Question" required>
-              <input name="options" placeholder="Options separees par |" required>
-              <input name="correctAnswer" placeholder="Bonne reponse" required>
-              <textarea name="explanation" placeholder="Explication" required></textarea>
-              <input name="reference" placeholder="Reference biblique">
-              <select name="category" id="adminCategorySelect"></select>
-              <select name="level" id="adminLevelSelect"></select>
-              <select name="type" id="adminTypeSelect"></select>
-              <label class="check"><input name="isActive" type="checkbox" checked> Active</label>
-              <button class="primary" type="submit" id="questionSubmit">Ajouter</button>
-              <button class="secondary hidden" type="button" id="questionCancel">Annuler</button>
+            <form class="editor" id="adminUserEditor">
+              <h3>Creer un utilisateur</h3>
+              <input name="name" placeholder="Nom" required>
+              <input name="email" placeholder="Email ou username" required>
+              <input name="password" type="password" placeholder="Mot de passe temporaire" required>
+              <select name="role">
+                <option value="operator">operator</option>
+                <option value="host">host</option>
+                <option value="player">player</option>
+                <option value="admin">admin</option>
+              </select>
+              <label class="check"><input name="isActive" type="checkbox" checked> Actif</label>
+              <button class="primary" type="submit">Creer</button>
             </form>
             <div class="admin-list">
-              <h3>Questions existantes</h3>
-              <div id="adminQuestions"></div>
+              <h3>Utilisateurs</h3>
+              <div id="adminUsers"></div>
             </div>
           </div>
           <div class="admin-layout">
@@ -299,7 +300,9 @@
               <input name="summary" placeholder="Resume d'apprentissage">
               <select name="category" id="challengeCategorySelect"></select>
               <select name="level" id="challengeLevelSelect"></select>
+              <input name="operatorIds" placeholder="IDs operateurs autorises, separes par virgule">
               <input name="days" type="number" min="1" max="30" value="7">
+              <label class="check"><input name="isActive" type="checkbox" checked> Publie</label>
               <button class="primary" type="submit" id="challengeSubmit">Ajouter</button>
               <button class="secondary hidden" type="button" id="challengeCancel">Annuler</button>
             </form>
@@ -327,29 +330,89 @@
               <textarea name="description" placeholder="Description"></textarea>
               <select name="category" id="bankCategorySelect"></select>
               <select name="difficulty" id="bankLevelSelect"></select>
+              <input name="operatorIds" placeholder="IDs operateurs autorises, separes par virgule">
               <label class="check"><input name="isPublic" type="checkbox" checked> Publique</label>
               <button class="primary" type="submit">Creer la banque</button>
             </form>
             <div class="admin-list">
-              <h3>Utilisateurs</h3>
-              <div id="adminUsers"></div>
-            </div>
-          </div>
-          <div class="admin-layout">
-            <div class="admin-list">
               <h3>Banques de questions</h3>
               <div id="adminQuestionBanks"></div>
             </div>
-            <form class="editor" id="bankQuestionEditor">
-              <h3>Ajouter une question a une banque</h3>
-              <select name="bankId" id="bankQuestionBankSelect"></select>
+          </div>
+        </div>
+      </section>
+
+      <section class="view shell" id="operatorView">
+        <div class="section-head">
+          <p class="eyebrow">Operateur</p>
+          <h2>Creation et gestion du contenu pedagogique</h2>
+        </div>
+        <form class="admin-login" id="operatorLogin">
+          <input name="email" placeholder="Email ou username" autocomplete="username" required>
+          <input name="password" type="password" placeholder="Mot de passe" autocomplete="current-password" required>
+          <button class="primary" type="submit">Connexion</button>
+        </form>
+        <div class="admin-panel hidden" id="operatorPanel">
+          <div class="admin-actions">
+            <button class="secondary" id="operatorRefresh" type="button">Rafraichir</button>
+            <button class="secondary" id="operatorLogout" type="button">Deconnexion</button>
+          </div>
+          <div class="admin-layout">
+            <div class="admin-list">
+              <h3>Banques autorisees</h3>
+              <div id="operatorBanks"></div>
+            </div>
+            <div class="admin-list">
+              <h3>Challenges autorises</h3>
+              <div id="operatorChallenges"></div>
+            </div>
+          </div>
+          <div class="admin-layout">
+            <form class="editor" id="operatorManualQuestion">
+              <h3>Saisie manuelle</h3>
+              <select name="targetType"><option value="bank">Banque</option><option value="challenge">Challenge</option></select>
+              <select name="targetId" id="operatorManualTarget"></select>
               <textarea name="question" placeholder="Question" required></textarea>
-              <input name="options" placeholder="Options separees par |" required>
+              <select name="type" id="operatorManualType"></select>
+              <input name="options" placeholder="Options separees par |">
               <input name="correctAnswer" placeholder="Bonne reponse" required>
               <textarea name="explanation" placeholder="Explication" required></textarea>
-              <input name="reference" placeholder="Reference">
+              <input name="reference" placeholder="Reference biblique">
+              <select name="difficulty" id="operatorManualLevel"></select>
+              <input name="tags" placeholder="Tags separes par virgule">
+              <select name="status"><option value="active">active</option><option value="draft">draft</option><option value="inactive">inactive</option></select>
               <button class="primary" type="submit">Ajouter</button>
             </form>
+            <form class="editor" id="operatorGenerateTheme">
+              <h3>Generation IA par theme</h3>
+              <select name="targetType"><option value="bank">Banque</option><option value="challenge">Challenge</option></select>
+              <select name="targetId" id="operatorThemeTarget"></select>
+              <input name="theme" placeholder="Theme, ex: Vie de Daniel" required>
+              <select name="category" id="operatorThemeCategory"></select>
+              <select name="difficulty" id="operatorThemeLevel"></select>
+              <input name="count" type="number" min="1" max="20" value="5">
+              <select name="type" id="operatorThemeType"></select>
+              <textarea name="instruction" placeholder="Consigne optionnelle"></textarea>
+              <button class="primary" type="submit">Generer en brouillon</button>
+            </form>
+          </div>
+          <div class="admin-layout">
+            <form class="editor" id="operatorGenerateText">
+              <h3>Generation IA depuis texte brut</h3>
+              <select name="targetType"><option value="bank">Banque</option><option value="challenge">Challenge</option></select>
+              <select name="targetId" id="operatorTextTarget"></select>
+              <textarea name="rawText" placeholder="Collez le texte source" required></textarea>
+              <input name="count" type="number" min="1" max="20" value="5">
+              <select name="difficulty" id="operatorTextLevel"></select>
+              <select name="type" id="operatorTextType"></select>
+              <label class="check"><input name="textOnly" type="checkbox" checked> Base uniquement sur le texte</label>
+              <textarea name="instruction" placeholder="Consigne optionnelle"></textarea>
+              <button class="primary" type="submit">Generer en brouillon</button>
+            </form>
+            <div class="admin-list">
+              <h3>Questions du contenu selectionne</h3>
+              <div id="operatorQuestions"></div>
+            </div>
           </div>
         </div>
       </section>
