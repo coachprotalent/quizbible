@@ -16,6 +16,7 @@
       <nav class="nav" aria-label="Navigation principale">
         <button data-view="home">Accueil</button>
         <button data-view="play">Commencer</button>
+        <button data-view="competition">Competition</button>
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
         <button data-view="admin">Admin</button>
@@ -31,6 +32,7 @@
           <p class="lead">Un jeu biblique moderne avec niveaux progressifs, explications, references et challenges d'etude.</p>
           <div class="hero-actions">
             <button class="primary" data-view="play">Commencer</button>
+            <button class="secondary" data-view="competition">Competition</button>
             <button class="secondary" data-view="challenges">Challenges</button>
             <button class="secondary" data-view="leaderboard">Classement</button>
           </div>
@@ -45,6 +47,110 @@
             <span><b>4</b> niveaux</span>
             <span><b>17</b> categories</span>
             <span><b>+5</b> bonus vitesse</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="view shell" id="competitionView">
+        <div class="section-head">
+          <p class="eyebrow">Mode competition</p>
+          <h2>Salons bibliques sur plusieurs jours</h2>
+        </div>
+        <div class="competition-layout">
+          <form class="editor" id="roomCreateForm">
+            <h3>Creer un salon</h3>
+            <input name="name" placeholder="Nom du salon" required>
+            <textarea name="description" placeholder="Description"></textarea>
+            <select name="category" id="roomCategorySelect"></select>
+            <select name="difficulty" id="roomLevelSelect"></select>
+            <label>Questions par tour
+              <div class="stepper"><button type="button" data-step="-1" data-target="questionsPerRound">-</button><input name="questionsPerRound" type="number" value="10" min="1" max="20"><button type="button" data-step="1" data-target="questionsPerRound">+</button></div>
+            </label>
+            <label>Duree max du tour (minutes)
+              <div class="stepper"><button type="button" data-step="-5" data-target="roundTimeLimit">-</button><input name="roundTimeLimit" type="number" value="10" min="1" max="60"><button type="button" data-step="5" data-target="roundTimeLimit">+</button></div>
+            </label>
+            <label>Chrono par question (secondes)
+              <div class="stepper"><button type="button" data-step="-15" data-target="questionTimeLimit">-</button><input name="questionTimeLimit" type="number" value="30" min="15" max="60"><button type="button" data-step="15" data-target="questionTimeLimit">+</button></div>
+            </label>
+            <label>Duree du salon
+              <select name="durationDays" id="roomDuration">
+                <option value="1">1 jour</option>
+                <option value="3">3 jours</option>
+                <option value="7" selected>7 jours</option>
+                <option value="14">14 jours</option>
+                <option value="custom">Personnalisee</option>
+              </select>
+            </label>
+            <label>Debut
+              <input name="startDate" type="datetime-local">
+            </label>
+            <label>Fin personnalisee
+              <input name="endDate" type="datetime-local">
+            </label>
+            <label>Code d'invitation
+              <input name="accessCode" maxlength="24" placeholder="Automatique si vide">
+            </label>
+            <label class="check"><input name="isPublic" type="checkbox" checked> Salon public</label>
+            <label class="check"><input name="questionMode" type="checkbox"> Questions personnalisees</label>
+            <button class="primary" type="submit">Creer le salon</button>
+          </form>
+
+          <div class="competition-main">
+            <form class="join-bar" id="roomJoinForm">
+              <input name="playerName" placeholder="Votre nom" required>
+              <input name="code" placeholder="Code ou lien du salon" required>
+              <button class="primary" type="submit">Rejoindre</button>
+            </form>
+            <div class="card-grid" id="roomsGrid"></div>
+            <div class="room-panel hidden" id="roomPanel">
+              <div class="room-head">
+                <div>
+                  <p class="eyebrow" id="roomStatus">Salon</p>
+                  <h2 id="roomTitle"></h2>
+                  <p id="roomDescription"></p>
+                </div>
+                <div class="room-actions">
+                  <button class="secondary" id="copyRoomLink" type="button">Lien</button>
+                  <button class="secondary" id="leaveRoom" type="button">Quitter</button>
+                  <button class="primary" id="startRound" type="button">Demarrer un tour</button>
+                </div>
+              </div>
+              <div class="stats-strip competition-stats">
+                <span><b id="roomParticipants">0</b> participants</span>
+                <span><b id="roomRounds">0</b> tours</span>
+                <span><b id="roomCode">CODE</b> code</span>
+              </div>
+              <div class="game-board hidden" id="competitionBoard">
+                <div class="game-meta">
+                  <span id="competitionCounter">Question 1/10</span>
+                  <span id="competitionTimer">30s</span>
+                  <span id="competitionScore">0 pts</span>
+                </div>
+                <div class="progress"><span id="competitionTimerBar"></span></div>
+                <article class="question-card">
+                  <p class="pill" id="competitionType">QCM</p>
+                  <h2 id="competitionQuestion"></h2>
+                  <div class="answers" id="competitionAnswers"></div>
+                </article>
+                <aside class="feedback hidden" id="competitionFeedback">
+                  <h3 id="competitionFeedbackTitle"></h3>
+                  <p id="competitionFeedbackText"></p>
+                  <p class="reference" id="competitionReference"></p>
+                  <button class="primary" id="competitionNext" type="button">Question suivante</button>
+                </aside>
+              </div>
+              <div class="results hidden" id="competitionResults"></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>Rang</th><th>Participant</th><th>Score</th><th>Tours</th></tr></thead>
+                  <tbody id="roomLeaderboardRows"></tbody>
+                </table>
+              </div>
+              <div class="admin-list">
+                <h3>Historique des tours</h3>
+                <div id="roomRoundsHistory"></div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -195,6 +301,16 @@
               <div id="adminChallenges"></div>
               <h3>Parties jouees et scores</h3>
               <div id="adminStats"></div>
+            </div>
+          </div>
+          <div class="admin-layout">
+            <div class="admin-list">
+              <h3>Salons de competition</h3>
+              <div id="adminRooms"></div>
+            </div>
+            <div class="admin-list">
+              <h3>Questions IA et erreurs Azure</h3>
+              <div id="adminAi"></div>
             </div>
           </div>
         </div>

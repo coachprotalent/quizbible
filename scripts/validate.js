@@ -20,7 +20,18 @@ for (const file of requiredFiles) {
   }
 }
 
-for (const file of ['data/questions.json', 'data/challenges.json', 'data/sessions.json', 'data/leaderboard.json']) {
+for (const file of [
+  'data/questions.json',
+  'data/challenges.json',
+  'data/sessions.json',
+  'data/leaderboard.json',
+  'data/rooms.json',
+  'data/roomParticipants.json',
+  'data/rounds.json',
+  'data/roundQuestions.json',
+  'data/answers.json',
+  'data/aiErrors.json'
+]) {
   JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
 }
 

@@ -138,6 +138,62 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === '/api/rooms' && req.method === 'GET') {
+    const rooms = readJson('rooms.json').filter((room) => room.isPublic && ['waiting', 'active'].includes(room.status) && new Date(room.endDate) > new Date());
+    sendJson(res, 200, { rooms: rooms.map(withRoomCounts) });
+    return;
+  }
+
+  if (url.pathname === '/api/rooms' && req.method === 'POST') {
+    const room = sanitizeRoom(await readBody(req));
+    const rooms = readJson('rooms.json');
+    room.id = `room-${crypto.randomUUID()}`;
+    room.creatorId = room.creatorId || `creator-${crypto.randomUUID()}`;
+    room.accessCode = room.accessCode || createAccessCode();
+    room.status = new Date(room.startDate) <= new Date() ? 'active' : 'waiting';
+    room.createdAt = new Date().toISOString();
+    rooms.push(room);
+    writeJson('rooms.json', rooms);
+    sendJson(res, 201, { room: withRoomCounts(room) });
+    return;
+  }
+
+  const roomMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)$/);
+  if (roomMatch && req.method === 'GET') {
+    const room = findRoom(decodeURIComponent(roomMatch[1]), url.searchParams.get('code'));
+    if (!room) return sendJson(res, 404, { error: 'Salon introuvable' });
+    sendJson(res, 200, { room: withRoomDetails(room) });
+    return;
+  }
+
+  const roomActionMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(join|leave|start-round|current-round|leaderboard|close)$/);
+  if (roomActionMatch) {
+    await handleRoomAction(req, res, roomActionMatch, url);
+    return;
+  }
+
+  const roundAnswerMatch = url.pathname.match(/^\/api\/rounds\/([^/]+)\/answer$/);
+  if (roundAnswerMatch && req.method === 'POST') {
+    const result = submitRoundAnswer(decodeURIComponent(roundAnswerMatch[1]), await readBody(req));
+    if (result.error) return sendJson(res, result.status || 400, { error: result.error });
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (url.pathname === '/api/ai/generate-round-questions' && req.method === 'POST') {
+    if (!rateLimit(req)) return sendJson(res, 429, { error: 'Trop de generations. Reessayez dans une minute.' });
+    const result = await generateRoundQuestions(await readBody(req));
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (url.pathname === '/api/ai/validate-questions' && req.method === 'POST') {
+    const body = await readBody(req);
+    const result = await validateQuestionsWithAI(body.questions || [], body);
+    sendJson(res, 200, result);
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/admin/login') {
     const body = await readBody(req);
     const username = process.env.ADMIN_USERNAME || 'admin';
@@ -180,6 +236,12 @@ async function handleAdminApi(req, res, url) {
       challenges: readJson('challenges.json'),
       sessions: readJson('sessions.json'),
       leaderboard: readJson('leaderboard.json'),
+      rooms: readJson('rooms.json').map(withRoomCounts),
+      roomParticipants: readJson('roomParticipants.json'),
+      rounds: readJson('rounds.json'),
+      roundQuestions: readJson('roundQuestions.json'),
+      answers: readJson('answers.json'),
+      aiErrors: readJson('aiErrors.json'),
       categories,
       levels
     });
@@ -258,7 +320,532 @@ async function handleAdminApi(req, res, url) {
     return;
   }
 
+  const adminRoomMatch = url.pathname.match(/^\/api\/admin\/rooms\/([^/]+)\/(close|delete|regenerate)$/);
+  if (adminRoomMatch) {
+    const id = decodeURIComponent(adminRoomMatch[1]);
+    const action = adminRoomMatch[2];
+    if (action === 'close' && req.method === 'POST') {
+      const room = updateRoomStatus(id, 'closed');
+      if (!room) return sendJson(res, 404, { error: 'Salon introuvable' });
+      sendJson(res, 200, { room });
+      return;
+    }
+    if (action === 'delete' && req.method === 'DELETE') {
+      deleteRoom(id);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (action === 'regenerate' && req.method === 'POST') {
+      const room = readJson('rooms.json').find((item) => item.id === id);
+      if (!room) return sendJson(res, 404, { error: 'Salon introuvable' });
+      const round = latestRoundForRoom(id) || createRound(room);
+      const generated = await createQuestionsForRound(room, round);
+      sendJson(res, 200, { round, questions: generated });
+      return;
+    }
+  }
+
   sendJson(res, 404, { error: 'Route admin introuvable' });
+}
+
+async function handleRoomAction(req, res, match, url) {
+  const roomId = decodeURIComponent(match[1]);
+  const action = match[2];
+  const code = url.searchParams.get('code');
+  const room = findRoom(roomId, code);
+  if (!room) return sendJson(res, 404, { error: 'Salon introuvable ou code invalide' });
+
+  if (action === 'join' && req.method === 'POST') {
+    const body = await readBody(req);
+    const participant = joinRoom(room, body);
+    sendJson(res, 200, { participant, room: withRoomDetails(room) });
+    return;
+  }
+
+  if (action === 'leave' && req.method === 'POST') {
+    const body = await readBody(req);
+    const participant = leaveRoom(room.id, body.participantId);
+    if (!participant) return sendJson(res, 404, { error: 'Participant introuvable' });
+    sendJson(res, 200, { participant });
+    return;
+  }
+
+  if (action === 'start-round' && req.method === 'POST') {
+    const body = await readBody(req);
+    const allowed = body.creatorId === room.creatorId || isAdmin(req);
+    if (!allowed) return sendJson(res, 403, { error: 'Createur ou admin requis' });
+    const round = createRound(room);
+    const questions = await createQuestionsForRound(room, round);
+    sendJson(res, 201, { round, questions: questions.map(withoutRoundAnswer) });
+    return;
+  }
+
+  if (action === 'current-round' && req.method === 'GET') {
+    const round = currentRoundForRoom(room.id);
+    if (!round) return sendJson(res, 200, { round: null, questions: [] });
+    const questions = readJson('roundQuestions.json')
+      .filter((question) => question.roundId === round.id)
+      .sort((a, b) => a.order - b.order)
+      .map(withoutRoundAnswer);
+    sendJson(res, 200, { round, questions });
+    return;
+  }
+
+  if (action === 'leaderboard' && req.method === 'GET') {
+    sendJson(res, 200, { leaderboard: roomLeaderboard(room.id) });
+    return;
+  }
+
+  if (action === 'close' && req.method === 'POST') {
+    const body = await readBody(req);
+    const allowed = body.creatorId === room.creatorId || isAdmin(req);
+    if (!allowed) return sendJson(res, 403, { error: 'Createur ou admin requis' });
+    const closed = updateRoomStatus(room.id, 'closed');
+    sendJson(res, 200, { room: closed });
+    return;
+  }
+
+  sendJson(res, 404, { error: 'Action salon introuvable' });
+}
+
+function sanitizeRoom(body) {
+  const now = new Date();
+  const defaultStart = body.startDate ? new Date(body.startDate) : now;
+  const defaultEnd = body.endDate ? new Date(body.endDate) : new Date(defaultStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return {
+    id: sanitizeString(body.id || '').slice(0, 80),
+    name: sanitizeString(body.name || 'Salon biblique').slice(0, 120),
+    description: sanitizeString(body.description || '').slice(0, 500),
+    category: sanitizeString(body.category || 'random').slice(0, 80),
+    difficulty: sanitizeString(body.difficulty || body.level || 'debutant').slice(0, 80),
+    creatorId: sanitizeString(body.creatorId || '').slice(0, 100),
+    accessCode: sanitizeString(body.accessCode || '').slice(0, 24).toUpperCase(),
+    isPublic: body.isPublic !== false,
+    status: ['waiting', 'active', 'closed', 'finished'].includes(body.status) ? body.status : 'waiting',
+    startDate: defaultStart.toISOString(),
+    endDate: defaultEnd > defaultStart ? defaultEnd.toISOString() : new Date(defaultStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    questionTimeLimit: clamp(Number(body.questionTimeLimit || 30), 15, 60),
+    roundTimeLimit: clamp(Number(body.roundTimeLimit || 10), 1, 60),
+    questionsPerRound: clamp(Number(body.questionsPerRound || 10), 1, 20),
+    questionMode: body.questionMode === 'personalized' ? 'personalized' : 'same',
+    createdAt: body.createdAt || new Date().toISOString()
+  };
+}
+
+function withRoomCounts(room) {
+  const participants = readJson('roomParticipants.json').filter((item) => item.roomId === room.id && !item.leftAt);
+  const rounds = readJson('rounds.json').filter((item) => item.roomId === room.id);
+  return { ...room, participantCount: participants.length, roundCount: rounds.length };
+}
+
+function withRoomDetails(room) {
+  return {
+    ...withRoomCounts(room),
+    participants: readJson('roomParticipants.json').filter((item) => item.roomId === room.id && !item.leftAt),
+    rounds: readJson('rounds.json').filter((item) => item.roomId === room.id).sort((a, b) => a.roundNumber - b.roundNumber)
+  };
+}
+
+function findRoom(idOrCode, code) {
+  const rooms = readJson('rooms.json');
+  const normalized = sanitizeString(idOrCode).toUpperCase();
+  const room = rooms.find((item) => item.id === idOrCode || item.accessCode === normalized);
+  if (!room) return null;
+  if (!room.isPublic && code && room.accessCode !== sanitizeString(code).toUpperCase()) return null;
+  if (!room.isPublic && !code && room.id !== idOrCode && room.accessCode !== normalized) return null;
+  return refreshRoomStatus(room);
+}
+
+function refreshRoomStatus(room) {
+  if (['closed', 'finished'].includes(room.status)) return room;
+  const now = new Date();
+  const status = now > new Date(room.endDate) ? 'finished' : now >= new Date(room.startDate) ? 'active' : 'waiting';
+  if (room.status !== status) {
+    const rooms = readJson('rooms.json');
+    const index = rooms.findIndex((item) => item.id === room.id);
+    if (index !== -1) {
+      rooms[index] = { ...rooms[index], status };
+      writeJson('rooms.json', rooms);
+    }
+    return { ...room, status };
+  }
+  return room;
+}
+
+function joinRoom(room, body) {
+  const participants = readJson('roomParticipants.json');
+  const existing = body.participantId && participants.find((item) => item.id === body.participantId && item.roomId === room.id);
+  if (existing) {
+    existing.leftAt = null;
+    writeJson('roomParticipants.json', participants);
+    return existing;
+  }
+  const participant = {
+    id: `rp-${crypto.randomUUID()}`,
+    roomId: room.id,
+    playerName: sanitizeString(body.playerName || 'Anonyme').slice(0, 40) || 'Anonyme',
+    joinedAt: new Date().toISOString(),
+    leftAt: null,
+    totalScore: 0,
+    roundsPlayed: 0
+  };
+  participants.push(participant);
+  writeJson('roomParticipants.json', participants);
+  return participant;
+}
+
+function leaveRoom(roomId, participantId) {
+  const participants = readJson('roomParticipants.json');
+  const participant = participants.find((item) => item.id === participantId && item.roomId === roomId);
+  if (!participant) return null;
+  participant.leftAt = new Date().toISOString();
+  writeJson('roomParticipants.json', participants);
+  return participant;
+}
+
+function createRound(room) {
+  const rounds = readJson('rounds.json');
+  const roomRounds = rounds.filter((item) => item.roomId === room.id);
+  const startsAt = new Date();
+  const round = {
+    id: `round-${crypto.randomUUID()}`,
+    roomId: room.id,
+    roundNumber: roomRounds.length + 1,
+    status: 'active',
+    startsAt: startsAt.toISOString(),
+    endsAt: new Date(startsAt.getTime() + room.roundTimeLimit * 60 * 1000).toISOString(),
+    generatedByAI: azureConfigured(),
+    validationStatus: 'pending',
+    createdAt: startsAt.toISOString()
+  };
+  rounds.push(round);
+  writeJson('rounds.json', rounds);
+  updateRoomStatus(room.id, 'active');
+  return round;
+}
+
+function currentRoundForRoom(roomId) {
+  const now = new Date();
+  const rounds = readJson('rounds.json').filter((round) => round.roomId === roomId);
+  for (const round of rounds) {
+    if (round.status === 'active' && now > new Date(round.endsAt)) {
+      finishRound(round.id);
+    }
+  }
+  return readJson('rounds.json')
+    .filter((round) => round.roomId === roomId && round.status === 'active')
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+}
+
+function latestRoundForRoom(roomId) {
+  return readJson('rounds.json')
+    .filter((round) => round.roomId === roomId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+}
+
+function finishRound(roundId) {
+  const rounds = readJson('rounds.json');
+  const round = rounds.find((item) => item.id === roundId);
+  if (!round) return null;
+  round.status = 'finished';
+  writeJson('rounds.json', rounds);
+  return round;
+}
+
+async function createQuestionsForRound(room, round) {
+  const roundQuestions = readJson('roundQuestions.json').filter((item) => item.roundId !== round.id);
+  const generated = await generateRoundQuestions({
+    roomId: room.id,
+    roundId: round.id,
+    category: room.category,
+    difficulty: room.difficulty,
+    count: room.questionsPerRound,
+    questionTypes: ['qcm', 'vrai_faux', 'personnage'],
+    recentQuestions: recentRoomQuestionTexts(room.id)
+  });
+  const saved = generated.questions.map((question, index) => sanitizeRoundQuestion({
+    ...question,
+    id: `rq-${crypto.randomUUID()}`,
+    roundId: round.id,
+    category: question.category || room.category,
+    difficulty: question.difficulty || question.level || room.difficulty,
+    order: index + 1
+  }));
+  writeJson('roundQuestions.json', roundQuestions.concat(saved));
+  setRoundValidation(round.id, generated.validationStatus || 'validated');
+  return saved;
+}
+
+async function generateRoundQuestions(input) {
+  const count = clamp(Number(input.count || 10), 1, 20);
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let generated = [];
+    try {
+      generated = await generateCompetitionQuestions(input, count);
+    } catch (error) {
+      lastError = `Tentative ${attempt}: ${error.message}`;
+      logAiError('generate-round-questions', lastError);
+      continue;
+    }
+    const validation = await validateQuestionsWithAI(generated, input);
+    const validQuestions = generated.filter((question, index) => validation.results[index]?.valid && !isRecentDuplicate(question, input.recentQuestions || []));
+    if (validQuestions.length >= count) {
+      return { questions: validQuestions.slice(0, count), validationStatus: 'validated', validation };
+    }
+    lastError = `Tentative ${attempt}: ${validQuestions.length}/${count} questions valides`;
+  }
+  logAiError('generate-round-questions', lastError || 'Generation incomplete');
+  return {
+    questions: selectQuestions(input.category, input.difficulty || input.level, count).map((question) => ({
+      ...question,
+      difficulty: question.level,
+      aiValidationStatus: 'fallback_local',
+      aiValidationNotes: 'Question locale de secours'
+    })),
+    validationStatus: 'fallback_local',
+    validation: { results: [] }
+  };
+}
+
+async function generateCompetitionQuestions(input, count) {
+  if (!azureConfigured()) {
+    return selectQuestions(input.category, input.difficulty || input.level, count).map((question) => ({
+      ...question,
+      difficulty: question.level,
+      justification: 'Fallback local'
+    }));
+  }
+  const payload = await callAzureJson([
+    {
+      role: 'system',
+      content: 'Tu es un generateur expert de quiz biblique pour une competition. Genere des questions adaptees a la categorie, au niveau de difficulte et au type de challenge. Chaque question doit avoir une seule bonne reponse, quatre options plausibles, une explication courte et une reference biblique quand possible. Evite les debats doctrinaux. Retourne uniquement du JSON valide.'
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        category: input.category,
+        difficulty: input.difficulty || input.level,
+        challengeType: input.challengeType || 'competition',
+        count,
+        participantLevel: input.participantLevel || null,
+        recentQuestions: input.recentQuestions || [],
+        output: {
+          questions: [{
+            question: 'string',
+            type: 'qcm',
+            options: ['string', 'string', 'string', 'string'],
+            correctAnswer: 'string',
+            explanation: 'string',
+            reference: 'string',
+            level: input.difficulty || input.level,
+            category: input.category,
+            justification: 'string'
+          }]
+        }
+      })
+    }
+  ]);
+  return (Array.isArray(payload.questions) ? payload.questions : []).map((question) => sanitizeQuestion({
+    ...question,
+    level: question.level || question.difficulty || input.difficulty,
+    category: question.category || input.category,
+    isActive: true
+  })).filter(validateQuestion);
+}
+
+async function validateQuestionsWithAI(questions, input = {}) {
+  const localResults = questions.map((question) => {
+    const valid = validateQuestion(sanitizeQuestion(question)) && !isRecentDuplicate(question, input.recentQuestions || []);
+    return {
+      valid,
+      reason: valid ? 'Validation locale OK' : 'Question invalide, ambigue ou doublon recent',
+      correctedQuestion: null
+    };
+  });
+  if (!azureConfigured() || !questions.length) {
+    return { results: localResults, source: 'local' };
+  }
+  try {
+    const payload = await callAzureJson([
+      {
+        role: 'system',
+        content: 'Tu es un validateur de qualite pour un quiz biblique. Analyse chaque question et verifie qu elle est claire, non ambigue, bibliquement coherente, adaptee au niveau demande, avec une seule bonne reponse. Retourne pour chaque question : valid true/false, reason, correctedQuestion si necessaire.'
+      },
+      { role: 'user', content: JSON.stringify({ questions, difficulty: input.difficulty || input.level, category: input.category }) }
+    ]);
+    const results = Array.isArray(payload.results) ? payload.results : Array.isArray(payload.questions) ? payload.questions : [];
+    return { results: questions.map((_, index) => ({
+      valid: Boolean(results[index]?.valid) && localResults[index].valid,
+      reason: sanitizeString(results[index]?.reason || localResults[index].reason).slice(0, 300),
+      correctedQuestion: results[index]?.correctedQuestion || null
+    })), source: 'azure' };
+  } catch (error) {
+    logAiError('validate-questions', error.message);
+    return { results: localResults, source: 'local_after_error' };
+  }
+}
+
+async function callAzureJson(messages) {
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT.replace(/\/$/, '');
+  const deployment = encodeURIComponent(process.env.AZURE_OPENAI_DEPLOYMENT);
+  const apiVersion = encodeURIComponent(process.env.AZURE_OPENAI_API_VERSION);
+  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'api-key': process.env.AZURE_OPENAI_API_KEY },
+    body: JSON.stringify({ messages, temperature: 0.45, response_format: { type: 'json_object' } })
+  });
+  if (!response.ok) throw new Error(`Azure OpenAI HTTP ${response.status}`);
+  const payload = await response.json();
+  return JSON.parse(payload.choices?.[0]?.message?.content || '{}');
+}
+
+function sanitizeRoundQuestion(body) {
+  const question = sanitizeQuestion(body);
+  return {
+    id: body.id || `rq-${crypto.randomUUID()}`,
+    roundId: sanitizeString(body.roundId || '').slice(0, 100),
+    question: question.question,
+    type: question.type,
+    options: question.options,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation,
+    reference: question.reference,
+    category: question.category,
+    difficulty: sanitizeString(body.difficulty || question.level).slice(0, 80),
+    aiValidationStatus: sanitizeString(body.aiValidationStatus || 'validated').slice(0, 80),
+    aiValidationNotes: sanitizeString(body.aiValidationNotes || body.justification || '').slice(0, 300),
+    order: Number(body.order || 0)
+  };
+}
+
+function withoutRoundAnswer(question) {
+  const { correctAnswer, ...safe } = question;
+  return safe;
+}
+
+function submitRoundAnswer(roundId, body) {
+  const round = readJson('rounds.json').find((item) => item.id === roundId);
+  if (!round) return { error: 'Tour introuvable', status: 404 };
+  if (round.status !== 'active') return { error: 'Tour non actif', status: 409 };
+  if (new Date() > new Date(round.endsAt)) {
+    finishRound(round.id);
+    return { error: 'Tour termine', status: 409 };
+  }
+  const question = readJson('roundQuestions.json').find((item) => item.id === body.questionId && item.roundId === roundId);
+  if (!question) return { error: 'Question introuvable', status: 404 };
+  const participants = readJson('roomParticipants.json');
+  const participant = participants.find((item) => item.id === body.participantId && item.roomId === round.roomId && !item.leftAt);
+  if (!participant) return { error: 'Participant introuvable', status: 404 };
+  const answers = readJson('answers.json');
+  if (answers.some((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId === participant.id)) {
+    return { error: 'Question deja repondue', status: 409 };
+  }
+  const responseTimeMs = clamp(Number(body.responseTimeMs || 0), 0, 60 * 1000);
+  const room = readJson('rooms.json').find((item) => item.id === round.roomId);
+  const questionTimeLimitMs = (room?.questionTimeLimit || 30) * 1000;
+  const selectedAnswer = sanitizeString(body.selectedAnswer || '').slice(0, 180);
+  const isCorrect = normalize(selectedAnswer) === normalize(question.correctAnswer);
+  const basePoints = isCorrect ? 10 : 0;
+  const remaining = Math.max(0, questionTimeLimitMs - responseTimeMs);
+  const speedBonus = isCorrect ? Math.round(10 * remaining / questionTimeLimitMs) : 0;
+  const answer = {
+    id: `ans-${crypto.randomUUID()}`,
+    roundId,
+    questionId: question.id,
+    participantId: participant.id,
+    selectedAnswer,
+    isCorrect,
+    responseTimeMs,
+    basePoints,
+    speedBonus,
+    totalPoints: basePoints + speedBonus,
+    answeredAt: new Date().toISOString()
+  };
+  answers.push(answer);
+  writeJson('answers.json', answers);
+  recalculateParticipantScores(round.roomId);
+  return {
+    answer,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation,
+    reference: question.reference,
+    leaderboard: roomLeaderboard(round.roomId)
+  };
+}
+
+function recalculateParticipantScores(roomId) {
+  const participants = readJson('roomParticipants.json');
+  const rounds = readJson('rounds.json').filter((round) => round.roomId === roomId).map((round) => round.id);
+  const answers = readJson('answers.json').filter((answer) => rounds.includes(answer.roundId));
+  for (const participant of participants.filter((item) => item.roomId === roomId)) {
+    const participantAnswers = answers.filter((answer) => answer.participantId === participant.id);
+    participant.totalScore = participantAnswers.reduce((sum, answer) => sum + answer.totalPoints, 0);
+    participant.roundsPlayed = new Set(participantAnswers.map((answer) => answer.roundId)).size;
+  }
+  writeJson('roomParticipants.json', participants);
+}
+
+function roomLeaderboard(roomId) {
+  recalculateParticipantScores(roomId);
+  return readJson('roomParticipants.json')
+    .filter((item) => item.roomId === roomId && !item.leftAt)
+    .sort((a, b) => b.totalScore - a.totalScore || a.joinedAt.localeCompare(b.joinedAt))
+    .map((item, index) => ({ rank: index + 1, ...item }));
+}
+
+function updateRoomStatus(roomId, status) {
+  const rooms = readJson('rooms.json');
+  const room = rooms.find((item) => item.id === roomId);
+  if (!room) return null;
+  room.status = status;
+  writeJson('rooms.json', rooms);
+  return room;
+}
+
+function setRoundValidation(roundId, validationStatus) {
+  const rounds = readJson('rounds.json');
+  const round = rounds.find((item) => item.id === roundId);
+  if (round) {
+    round.validationStatus = validationStatus;
+    writeJson('rounds.json', rounds);
+  }
+}
+
+function deleteRoom(roomId) {
+  writeJson('rooms.json', readJson('rooms.json').filter((item) => item.id !== roomId));
+  writeJson('roomParticipants.json', readJson('roomParticipants.json').filter((item) => item.roomId !== roomId));
+  const roundIds = readJson('rounds.json').filter((item) => item.roomId === roomId).map((round) => round.id);
+  writeJson('rounds.json', readJson('rounds.json').filter((item) => item.roomId !== roomId));
+  writeJson('roundQuestions.json', readJson('roundQuestions.json').filter((item) => !roundIds.includes(item.roundId)));
+  writeJson('answers.json', readJson('answers.json').filter((item) => !roundIds.includes(item.roundId)));
+}
+
+function recentRoomQuestionTexts(roomId) {
+  const roundIds = readJson('rounds.json').filter((round) => round.roomId === roomId).map((round) => round.id);
+  return readJson('roundQuestions.json')
+    .filter((question) => roundIds.includes(question.roundId))
+    .slice(-80)
+    .map((question) => question.question);
+}
+
+function isRecentDuplicate(question, recentQuestions) {
+  const text = normalize(question.question || '');
+  return recentQuestions.some((recent) => normalize(recent) === text);
+}
+
+function logAiError(scope, message) {
+  appendJson('aiErrors.json', {
+    id: `aie-${crypto.randomUUID()}`,
+    scope,
+    message: sanitizeString(message || 'Erreur IA').slice(0, 500),
+    createdAt: new Date().toISOString()
+  });
+}
+
+function createAccessCode() {
+  return crypto.randomBytes(4).toString('hex').toUpperCase();
 }
 
 function loadEnv() {

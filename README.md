@@ -11,6 +11,7 @@ Quiz Bible est une application web mobile-first pour apprendre la Bible en jouan
 - Explication, bonne reponse et reference biblique apres chaque question.
 - Challenges 7 jours : Moise, David, Daniel, Paul, prophetes majeurs, paraboles, miracles, femmes importantes, rois, empires.
 - Classement local.
+- Mode Competition avec salons publics/prives, code d'invitation, tours chronometres et classement par salon.
 - Admin protege par identifiants serveur.
 - Generation optionnelle de questions avec Azure OpenAI, avec fallback local si Azure n'est pas configure.
 
@@ -111,6 +112,61 @@ Sortie :
 
 Si Azure OpenAI n'est pas configure, l'API renvoie des questions locales actives.
 
+## Mode Competition
+
+Le mode Competition permet de creer un salon sur 1, 3, 7, 14 jours ou une duree personnalisee.
+
+Le createur choisit :
+
+- nom et description du salon ;
+- categorie biblique et difficulte ;
+- nombre de questions par tour ;
+- duree maximale du tour ;
+- chrono par question ;
+- date de debut et date de fin ;
+- salon public ou prive ;
+- code d'invitation ;
+- questions communes ou personnalisees.
+
+Endpoints :
+
+```text
+POST /api/rooms
+GET /api/rooms
+GET /api/rooms/:id
+POST /api/rooms/:id/join
+POST /api/rooms/:id/leave
+POST /api/rooms/:id/start-round
+GET /api/rooms/:id/current-round
+POST /api/rounds/:id/answer
+GET /api/rooms/:id/leaderboard
+POST /api/rooms/:id/close
+POST /api/ai/generate-round-questions
+POST /api/ai/validate-questions
+```
+
+Scoring competition :
+
+```text
+score = basePoints + round(speedBonusMax * remainingTime / questionTimeLimit)
+```
+
+Par defaut :
+
+- bonne reponse : 10 points ;
+- bonus vitesse : jusqu'a 10 points ;
+- mauvaise reponse ou non-reponse : 0 point.
+
+Les questions de tour sont stockees dans `data/roundQuestions.json` avant d'etre envoyees aux participants. Tous les participants d'un meme tour recoivent le meme set de questions, sauf extension future du mode personnalise.
+
+Pipeline IA :
+
+1. generation des questions avec Azure OpenAI ;
+2. validation automatique par Azure OpenAI ;
+3. rejet des questions invalides ou doublons recents ;
+4. trois tentatives maximum ;
+5. fallback local si la generation ou la validation echoue.
+
 ## Azure OpenAI
 
 Le serveur appelle l'API Chat Completions Azure avec le prompt systeme suivant :
@@ -137,6 +193,10 @@ La page `/admin` permet :
 - voir les categories ;
 - voir les parties jouees et scores ;
 - voir, creer, modifier et supprimer les challenges ;
+- voir tous les salons de competition ;
+- fermer ou supprimer un salon ;
+- relancer la generation IA d'un salon ;
+- voir les questions de tours et les erreurs Azure OpenAI ;
 - tester la generation Azure OpenAI via le bouton `Generer 20 questions`.
 
 Les identifiants viennent de :

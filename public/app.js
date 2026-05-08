@@ -13,6 +13,18 @@ const state = {
   remaining: 30
 };
 
+const competition = {
+  room: null,
+  participant: null,
+  round: null,
+  questions: [],
+  index: 0,
+  score: 0,
+  timerId: null,
+  questionStartedAt: 0,
+  remaining: 30
+};
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -24,8 +36,19 @@ async function init() {
   $('#themeToggle').addEventListener('click', toggleTheme);
   state.meta = await api('/api/meta');
   fillSelects();
-  await Promise.all([loadChallenges(), loadLeaderboard()]);
+  await Promise.all([loadChallenges(), loadLeaderboard(), loadRooms()]);
+  handleInitialHash();
   if (location.pathname === '/admin') showView('admin');
+}
+
+function handleInitialHash() {
+  const hash = location.hash.replace(/^#/, '');
+  if (hash.startsWith('competition/')) {
+    showView('competition');
+    $('#roomJoinForm').elements.code.value = hash.split('/')[1] || '';
+    return;
+  }
+  if (hash && $(`#${hash}View`)) showView(hash);
 }
 
 function bindNavigation() {
@@ -41,6 +64,7 @@ function showView(view) {
   location.hash = view;
   if (view === 'leaderboard') loadLeaderboard();
   if (view === 'challenges') loadChallenges();
+  if (view === 'competition') loadRooms();
 }
 
 function bindForms() {
@@ -54,15 +78,31 @@ function bindForms() {
   $('#challengeEditor').addEventListener('submit', addChallenge);
   $('#questionCancel').addEventListener('click', resetQuestionEditor);
   $('#challengeCancel').addEventListener('click', resetChallengeEditor);
+  $('#roomCreateForm').addEventListener('submit', createRoom);
+  $('#roomJoinForm').addEventListener('submit', joinRoomByCode);
+  $('#startRound').addEventListener('click', startCompetitionRound);
+  $('#leaveRoom').addEventListener('click', leaveCompetitionRoom);
+  $('#copyRoomLink').addEventListener('click', copyRoomLink);
+  $('#competitionNext').addEventListener('click', nextCompetitionQuestion);
+  $$('.stepper button').forEach((button) => button.addEventListener('click', stepNumberInput));
 }
 
 function fillSelects() {
   const categoryOptions = state.meta.categories.map((category) => `<option value="${escapeHtml(category.id)}">${escapeHtml(category.label)}</option>`).join('');
   const levelOptions = state.meta.levels.map((level) => `<option value="${escapeHtml(level.id)}">${escapeHtml(level.label)}</option>`).join('');
   const typeOptions = state.meta.questionTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
-  ['#categorySelect', '#adminCategorySelect', '#challengeCategorySelect'].forEach((selector) => $(selector).innerHTML = categoryOptions);
-  ['#levelSelect', '#adminLevelSelect', '#challengeLevelSelect'].forEach((selector) => $(selector).innerHTML = levelOptions);
+  ['#categorySelect', '#adminCategorySelect', '#challengeCategorySelect', '#roomCategorySelect'].forEach((selector) => $(selector).innerHTML = categoryOptions);
+  ['#levelSelect', '#adminLevelSelect', '#challengeLevelSelect', '#roomLevelSelect'].forEach((selector) => $(selector).innerHTML = levelOptions);
   $('#adminTypeSelect').innerHTML = typeOptions;
+}
+
+function stepNumberInput(event) {
+  const button = event.currentTarget;
+  const input = button.closest('.stepper').querySelector(`input[name="${button.dataset.target}"]`);
+  const min = Number(input.min || 0);
+  const max = Number(input.max || 999);
+  const next = Number(input.value || 0) + Number(button.dataset.step || 1);
+  input.value = Math.max(min, Math.min(max, next));
 }
 
 async function startGame(event) {
@@ -208,6 +248,244 @@ async function loadLeaderboard() {
   `).join('') : '<tr><td colspan="5">Aucun score pour le moment.</td></tr>';
 }
 
+async function loadRooms() {
+  const { rooms } = await api('/api/rooms');
+  $('#roomsGrid').innerHTML = rooms.length ? rooms.map((room) => `
+    <article class="challenge-card">
+      <p class="pill">${escapeHtml(room.status)}</p>
+      <h3>${escapeHtml(room.name)}</h3>
+      <p>${escapeHtml(room.description || 'Competition biblique chronometree.')}</p>
+      <p>${escapeHtml(room.category)} · ${escapeHtml(room.difficulty)} · ${room.questionsPerRound} questions</p>
+      <p>${new Date(room.startDate).toLocaleString('fr-FR')} - ${new Date(room.endDate).toLocaleString('fr-FR')}</p>
+      <button class="secondary" data-room-open="${escapeHtml(room.id)}">Ouvrir</button>
+    </article>
+  `).join('') : '<p>Aucun salon public actif.</p>';
+  $$('[data-room-open]').forEach((button) => button.addEventListener('click', () => openRoom(button.dataset.roomOpen)));
+}
+
+async function createRoom(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const startDate = form.get('startDate') ? new Date(form.get('startDate')) : new Date();
+  const duration = form.get('durationDays');
+  const endDate = duration === 'custom' && form.get('endDate')
+    ? new Date(form.get('endDate'))
+    : new Date(startDate.getTime() + Number(duration || 7) * 24 * 60 * 60 * 1000);
+  const creatorId = localStorage.getItem('quizBibleCreatorId') || `creator-${cryptoRandom()}`;
+  localStorage.setItem('quizBibleCreatorId', creatorId);
+  const { room } = await api('/api/rooms', {
+    method: 'POST',
+    body: {
+      name: form.get('name'),
+      description: form.get('description'),
+      category: form.get('category'),
+      difficulty: form.get('difficulty'),
+      creatorId,
+      accessCode: form.get('accessCode'),
+      isPublic: form.get('isPublic') === 'on',
+      questionMode: form.get('questionMode') === 'on' ? 'personalized' : 'same',
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      questionTimeLimit: Number(form.get('questionTimeLimit')),
+      roundTimeLimit: Number(form.get('roundTimeLimit')),
+      questionsPerRound: Number(form.get('questionsPerRound'))
+    }
+  });
+  event.currentTarget.reset();
+  await loadRooms();
+  await openRoom(room.id);
+}
+
+async function joinRoomByCode(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const code = String(form.get('code')).trim().split('/').filter(Boolean).pop();
+  await joinRoom(code, form.get('playerName'));
+}
+
+async function openRoom(roomId) {
+  const { room } = await api(`/api/rooms/${encodeURIComponent(roomId)}`);
+  competition.room = room;
+  renderRoom();
+}
+
+async function joinRoom(roomIdOrCode, playerName) {
+  const known = JSON.parse(localStorage.getItem('quizBibleParticipants') || '{}');
+  const { room } = await api(`/api/rooms/${encodeURIComponent(roomIdOrCode)}`);
+  const response = await api(`/api/rooms/${encodeURIComponent(room.id)}/join?code=${encodeURIComponent(room.accessCode)}`, {
+    method: 'POST',
+    body: { playerName, participantId: known[room.id] }
+  });
+  known[room.id] = response.participant.id;
+  localStorage.setItem('quizBibleParticipants', JSON.stringify(known));
+  competition.room = response.room;
+  competition.participant = response.participant;
+  renderRoom();
+  await refreshCurrentRound();
+}
+
+function renderRoom() {
+  const room = competition.room;
+  if (!room) return;
+  $('#roomPanel').classList.remove('hidden');
+  $('#roomStatus').textContent = `${room.status} · ${room.difficulty}`;
+  $('#roomTitle').textContent = room.name;
+  $('#roomDescription').textContent = room.description || 'Salon de competition biblique.';
+  $('#roomParticipants').textContent = room.participantCount || room.participants?.length || 0;
+  $('#roomRounds').textContent = room.roundCount || room.rounds?.length || 0;
+  $('#roomCode').textContent = room.accessCode;
+  $('#roomRoundsHistory').innerHTML = (room.rounds || []).map((round) => `
+    <article class="admin-item">
+      <strong>Tour ${round.roundNumber} · ${round.status}</strong>
+      <p>${new Date(round.startsAt).toLocaleString('fr-FR')} - ${new Date(round.endsAt).toLocaleString('fr-FR')}</p>
+      <p>IA: ${round.generatedByAI ? 'oui' : 'fallback local'} · validation: ${escapeHtml(round.validationStatus)}</p>
+    </article>
+  `).join('') || '<p>Aucun tour.</p>';
+  loadRoomLeaderboard();
+}
+
+async function refreshCurrentRound() {
+  if (!competition.room) return;
+  const data = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/current-round?code=${encodeURIComponent(competition.room.accessCode)}`);
+  competition.round = data.round;
+  competition.questions = data.questions || [];
+  if (competition.round && competition.questions.length) {
+    competition.index = 0;
+    competition.score = 0;
+    $('#competitionResults').classList.add('hidden');
+    $('#competitionBoard').classList.remove('hidden');
+    renderCompetitionQuestion();
+  }
+}
+
+async function startCompetitionRound() {
+  if (!competition.room) return;
+  const creatorId = localStorage.getItem('quizBibleCreatorId') || '';
+  const data = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/start-round?code=${encodeURIComponent(competition.room.accessCode)}`, {
+    method: 'POST',
+    body: { creatorId }
+  });
+  competition.round = data.round;
+  competition.questions = data.questions;
+  competition.index = 0;
+  competition.score = 0;
+  $('#competitionResults').classList.add('hidden');
+  $('#competitionBoard').classList.remove('hidden');
+  await openRoom(competition.room.id);
+  renderCompetitionQuestion();
+}
+
+function renderCompetitionQuestion() {
+  clearInterval(competition.timerId);
+  const question = competition.questions[competition.index];
+  if (!question) return finishCompetitionRound();
+  competition.remaining = competition.room.questionTimeLimit;
+  competition.questionStartedAt = Date.now();
+  $('#competitionFeedback').classList.add('hidden');
+  $('#competitionCounter').textContent = `Question ${competition.index + 1}/${competition.questions.length}`;
+  $('#competitionScore').textContent = `${competition.score} pts`;
+  $('#competitionType').textContent = question.type.replaceAll('_', ' ');
+  $('#competitionQuestion').textContent = question.question;
+  $('#competitionAnswers').innerHTML = question.options.map((option) => `<button class="answer" type="button">${escapeHtml(option)}</button>`).join('');
+  $$('#competitionAnswers .answer').forEach((button) => button.addEventListener('click', () => submitCompetitionAnswer(button.textContent)));
+  tickCompetitionTimer();
+  competition.timerId = setInterval(() => {
+    competition.remaining -= 1;
+    tickCompetitionTimer();
+    if (competition.remaining <= 0) submitCompetitionAnswer('');
+  }, 1000);
+}
+
+function tickCompetitionTimer() {
+  $('#competitionTimer').textContent = `${Math.max(0, competition.remaining)}s`;
+  $('#competitionTimerBar').style.width = `${Math.max(0, (competition.remaining / competition.room.questionTimeLimit) * 100)}%`;
+}
+
+async function submitCompetitionAnswer(selectedAnswer) {
+  clearInterval(competition.timerId);
+  const question = competition.questions[competition.index];
+  const participant = competition.participant || getStoredParticipant(competition.room.id);
+  if (!participant) {
+    alert('Rejoignez le salon avant de repondre.');
+    return;
+  }
+  const responseTimeMs = Date.now() - competition.questionStartedAt;
+  const result = await api(`/api/rounds/${encodeURIComponent(competition.round.id)}/answer`, {
+    method: 'POST',
+    body: { participantId: participant.id || participant, questionId: question.id, selectedAnswer, responseTimeMs }
+  });
+  competition.score += result.answer.totalPoints;
+  $('#competitionScore').textContent = `${competition.score} pts`;
+  $$('#competitionAnswers .answer').forEach((button) => {
+    button.disabled = true;
+    if (button.textContent === result.correctAnswer) button.classList.add('correct');
+    if (selectedAnswer && button.textContent === selectedAnswer && !result.answer.isCorrect) button.classList.add('wrong');
+  });
+  $('#competitionFeedbackTitle').textContent = result.answer.isCorrect ? `+${result.answer.totalPoints} points` : '0 point';
+  $('#competitionFeedbackText').textContent = `${result.explanation} Bonne reponse : ${result.correctAnswer}.`;
+  $('#competitionReference').textContent = result.reference ? `Reference : ${result.reference}` : '';
+  $('#competitionFeedback').classList.remove('hidden');
+  $('#competitionNext').textContent = competition.index + 1 >= competition.questions.length ? 'Resultat du tour' : 'Question suivante';
+  renderRoomLeaderboard(result.leaderboard);
+}
+
+function nextCompetitionQuestion() {
+  competition.index += 1;
+  if (competition.index >= competition.questions.length) {
+    finishCompetitionRound();
+    return;
+  }
+  renderCompetitionQuestion();
+}
+
+function finishCompetitionRound() {
+  clearInterval(competition.timerId);
+  $('#competitionBoard').classList.add('hidden');
+  $('#competitionResults').classList.remove('hidden');
+  $('#competitionResults').innerHTML = `
+    <p class="eyebrow">Tour termine</p>
+    <h2>${competition.score} points</h2>
+    <p>Le classement du salon est mis a jour apres chaque reponse.</p>
+  `;
+  loadRoomLeaderboard();
+}
+
+async function loadRoomLeaderboard() {
+  if (!competition.room) return;
+  const { leaderboard } = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/leaderboard?code=${encodeURIComponent(competition.room.accessCode)}`);
+  renderRoomLeaderboard(leaderboard);
+}
+
+function renderRoomLeaderboard(leaderboard) {
+  $('#roomLeaderboardRows').innerHTML = leaderboard.length ? leaderboard.map((row) => `
+    <tr><td>${row.rank}</td><td>${escapeHtml(row.playerName)}</td><td><strong>${row.totalScore}</strong></td><td>${row.roundsPlayed}</td></tr>
+  `).join('') : '<tr><td colspan="4">Aucun participant classe.</td></tr>';
+}
+
+async function leaveCompetitionRoom() {
+  if (!competition.room) return;
+  const participant = competition.participant || getStoredParticipant(competition.room.id);
+  if (!participant) return;
+  await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/leave?code=${encodeURIComponent(competition.room.accessCode)}`, {
+    method: 'POST',
+    body: { participantId: participant.id || participant }
+  });
+  competition.participant = null;
+  await openRoom(competition.room.id);
+}
+
+function getStoredParticipant(roomId) {
+  const known = JSON.parse(localStorage.getItem('quizBibleParticipants') || '{}');
+  return known[roomId] || null;
+}
+
+async function copyRoomLink() {
+  if (!competition.room) return;
+  const link = `${location.origin}/#competition/${competition.room.accessCode}`;
+  await navigator.clipboard?.writeText(link);
+  alert(`Lien du salon : ${link}`);
+}
+
 async function adminLogin(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -259,11 +537,30 @@ async function loadAdmin() {
     <p><strong>${data.leaderboard.length}</strong> scores enregistres</p>
     <p><strong>${data.challenges.length}</strong> challenges</p>
   `;
+  $('#adminRooms').innerHTML = data.rooms.map((room) => `
+    <article class="admin-item">
+      <strong>${escapeHtml(room.name)}</strong>
+      <p>${escapeHtml(room.status)} · ${escapeHtml(room.category)} · ${escapeHtml(room.difficulty)} · ${room.participantCount} participants</p>
+      <div class="admin-item-actions">
+        <button class="secondary" data-admin-room-close="${escapeHtml(room.id)}">Fermer</button>
+        <button class="secondary" data-admin-room-regen="${escapeHtml(room.id)}">Relancer IA</button>
+        <button class="secondary" data-admin-room-delete="${escapeHtml(room.id)}">Supprimer</button>
+      </div>
+    </article>
+  `).join('') || '<p>Aucun salon.</p>';
+  $('#adminAi').innerHTML = `
+    <p><strong>${data.roundQuestions.length}</strong> questions de tours generees ou fallback.</p>
+    <p><strong>${data.aiErrors.length}</strong> erreurs Azure OpenAI.</p>
+    ${data.aiErrors.slice(-5).reverse().map((error) => `<article class="admin-item"><strong>${escapeHtml(error.scope)}</strong><p>${escapeHtml(error.message)}</p></article>`).join('')}
+  `;
   $$('[data-edit]').forEach((button) => button.addEventListener('click', () => editQuestion(data.questions.find((q) => q.id === button.dataset.edit))));
   $$('[data-delete]').forEach((button) => button.addEventListener('click', () => deleteQuestion(button.dataset.delete)));
   $$('[data-toggle]').forEach((button) => button.addEventListener('click', () => toggleQuestion(data.questions.find((q) => q.id === button.dataset.toggle))));
   $$('[data-edit-challenge]').forEach((button) => button.addEventListener('click', () => editChallenge(data.challenges.find((c) => c.id === button.dataset.editChallenge))));
   $$('[data-delete-challenge]').forEach((button) => button.addEventListener('click', () => deleteChallenge(button.dataset.deleteChallenge)));
+  $$('[data-admin-room-close]').forEach((button) => button.addEventListener('click', () => adminCloseRoom(button.dataset.adminRoomClose)));
+  $$('[data-admin-room-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteRoom(button.dataset.adminRoomDelete)));
+  $$('[data-admin-room-regen]').forEach((button) => button.addEventListener('click', () => adminRegenerateRoom(button.dataset.adminRoomRegen)));
 }
 
 async function addQuestion(event) {
@@ -373,6 +670,27 @@ async function adminGenerate() {
     body: { category, level, count: 20, questionTypes: ['qcm', 'vrai_faux', 'personnage'] }
   });
   await loadAdmin();
+}
+
+async function adminCloseRoom(id) {
+  await api(`/api/admin/rooms/${encodeURIComponent(id)}/close`, { method: 'POST', body: {} });
+  await loadAdmin();
+}
+
+async function adminDeleteRoom(id) {
+  await api(`/api/admin/rooms/${encodeURIComponent(id)}/delete`, { method: 'DELETE', body: {} });
+  await loadAdmin();
+}
+
+async function adminRegenerateRoom(id) {
+  await api(`/api/admin/rooms/${encodeURIComponent(id)}/regenerate`, { method: 'POST', body: {} });
+  await loadAdmin();
+}
+
+function cryptoRandom() {
+  const bytes = new Uint32Array(2);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((value) => value.toString(16)).join('');
 }
 
 function toggleTheme() {
