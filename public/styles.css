@@ -511,6 +511,33 @@ textarea {
   color: var(--muted);
 }
 
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.final-results {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.final-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.schedule-options {
+  display: grid;
+  gap: 0.75rem;
+}
+
 body.competition-immersive {
   overflow-y: auto;
   background: var(--bg);
@@ -745,6 +772,10 @@ th {
 
   body.competition-immersive #leaveRoom {
     width: auto;
+  }
+
+  .final-result-row {
+    grid-template-columns: 1fr;
   }
 }
 

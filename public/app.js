@@ -30,6 +30,8 @@ const competition = {
   lastState: null
 };
 
+let questionBanks = [];
+
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -41,7 +43,7 @@ async function init() {
   $('#themeToggle').addEventListener('click', toggleTheme);
   state.meta = await api('/api/meta');
   fillSelects();
-  await Promise.all([loadChallenges(), loadLeaderboard(), loadRooms()]);
+  await Promise.all([loadChallenges(), loadLeaderboard(), loadRooms(), loadQuestionBanks()]);
   handleInitialHash();
   restoreCompetitionSession();
   if (location.pathname === '/admin') showView('admin');
@@ -82,6 +84,8 @@ function bindForms() {
   $('#adminGenerate').addEventListener('click', adminGenerate);
   $('#questionEditor').addEventListener('submit', addQuestion);
   $('#challengeEditor').addEventListener('submit', addChallenge);
+  $('#bankEditor').addEventListener('submit', addQuestionBank);
+  $('#bankQuestionEditor').addEventListener('submit', addBankQuestion);
   $('#questionCancel').addEventListener('click', resetQuestionEditor);
   $('#challengeCancel').addEventListener('click', resetChallengeEditor);
   $('#roomCreateForm').addEventListener('submit', createRoom);
@@ -91,6 +95,8 @@ function bindForms() {
   $('#copyRoomLink').addEventListener('click', copyRoomLink);
   $('#competitionNext').addEventListener('click', nextCompetitionQuestion);
   $('#advancedToggle').addEventListener('click', () => $('#advancedOptions').classList.toggle('hidden'));
+  $('#roomQuestionSource').addEventListener('change', updateQuestionBankVisibility);
+  $('#roomIsScheduled').addEventListener('change', updateScheduleVisibility);
   $$('.stepper button').forEach((button) => button.addEventListener('click', stepNumberInput));
 }
 
@@ -100,6 +106,8 @@ function fillSelects() {
   const typeOptions = state.meta.questionTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
   ['#categorySelect', '#adminCategorySelect', '#challengeCategorySelect', '#roomCategorySelect'].forEach((selector) => $(selector).innerHTML = categoryOptions);
   ['#levelSelect', '#adminLevelSelect', '#challengeLevelSelect', '#roomLevelSelect'].forEach((selector) => $(selector).innerHTML = levelOptions);
+  $('#bankCategorySelect').innerHTML = categoryOptions;
+  $('#bankLevelSelect').innerHTML = levelOptions;
   $('#adminTypeSelect').innerHTML = typeOptions;
   $('#roomQuestionTypes').innerHTML = typeOptions;
   $('#roomCategorySelect').value = 'random';
@@ -273,19 +281,51 @@ async function loadRooms() {
   $$('[data-room-open]').forEach((button) => button.addEventListener('click', () => openRoom(button.dataset.roomOpen)));
 }
 
+async function loadQuestionBanks() {
+  try {
+    const data = await api('/api/question-banks');
+    questionBanks = data.questionBanks || [];
+    $('#roomQuestionBankSelect').innerHTML = questionBanks.length
+      ? questionBanks.map((bank) => `<option value="${escapeHtml(bank.id)}">${escapeHtml(bank.title)} - ${escapeHtml(bank.difficulty)}</option>`).join('')
+      : '<option value="">Aucune banque disponible</option>';
+    updateQuestionBankVisibility();
+  } catch (error) {
+    console.warn('loadQuestionBanks failed', error);
+    questionBanks = [];
+  }
+}
+
+function updateQuestionBankVisibility() {
+  const local = $('#roomQuestionSource')?.value === 'local';
+  $('#roomQuestionBankWrap')?.classList.toggle('hidden', !local);
+}
+
+function updateScheduleVisibility() {
+  $('#roomScheduleOptions')?.classList.toggle('hidden', !$('#roomIsScheduled')?.checked);
+}
+
 async function createRoom(event) {
   event.preventDefault();
+  const formElement = event.currentTarget;
   const submit = event.submitter;
   setButtonLoading(submit, true);
   setRoomMessage('Creation du salon...', true);
-  const form = new FormData(event.currentTarget);
+  const form = new FormData(formElement);
   try {
-    const startDate = new Date();
     const totalMinutes = Number(form.get('roundTimeLimit') || 30);
+    const isScheduled = form.get('isScheduled') === 'on';
+    const scheduledStartAt = buildScheduledStart(form);
+    if (isScheduled && !scheduledStartAt) throw new Error('Choisissez une date et une heure de debut.');
+    const durationMinutes = Number(form.get('durationMinutes') || totalMinutes);
+    const startDate = isScheduled && scheduledStartAt ? scheduledStartAt : new Date();
+    const manualEnd = form.get('scheduledEndAt') ? new Date(form.get('scheduledEndAt')) : null;
     const endDate = new Date(startDate.getTime() + totalMinutes * 60 * 1000);
     const creatorId = localStorage.getItem('quizBibleCreatorId') || `creator-${cryptoRandom()}`;
     localStorage.setItem('quizBibleCreatorId', creatorId);
     const selectedTypes = form.getAll('questionTypes');
+    if (form.get('questionSource') === 'local' && !form.get('questionBankId')) {
+      throw new Error('Choisissez une banque de questions locales.');
+    }
     const { room } = await api('/api/rooms', {
       method: 'POST',
       body: {
@@ -299,15 +339,21 @@ async function createRoom(event) {
         questionTypes: selectedTypes.length ? selectedTypes : ['qcm', 'vrai_faux', 'personnage'],
         explanationsEnabled: form.get('explanationsEnabled') !== null,
         questionSource: form.get('questionSource') || 'ai',
+        questionBankId: form.get('questionSource') === 'local' ? form.get('questionBankId') : '',
         startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
+        endDate: (manualEnd || new Date(startDate.getTime() + durationMinutes * 60 * 1000) || endDate).toISOString(),
+        isScheduled,
+        scheduledStartAt: isScheduled ? startDate.toISOString() : null,
+        scheduledEndAt: isScheduled ? (manualEnd || new Date(startDate.getTime() + durationMinutes * 60 * 1000)).toISOString() : null,
+        durationMinutes,
+        autoStart: form.get('autoStart') === 'on',
         questionTimeLimit: Number(form.get('questionTimeLimit')),
         roundTimeLimit: totalMinutes,
         questionsPerRound: Number(form.get('questionsPerRound'))
       }
     });
     await joinRoom(room.id, form.get('playerName'));
-    event.currentTarget.reset();
+    formElement?.reset?.();
     resetQuickRoomDefaults();
     setRoomMessage(`Salon cree : ${room.accessCode}`, true);
     await loadRooms();
@@ -317,6 +363,13 @@ async function createRoom(event) {
   } finally {
     setButtonLoading(submit, false);
   }
+}
+
+function buildScheduledStart(form) {
+  const date = form.get('scheduledStartDate');
+  const time = form.get('scheduledStartTime');
+  if (!date || !time) return null;
+  return new Date(`${date}T${time}`);
 }
 
 async function joinRoomByCode(event) {
@@ -533,16 +586,34 @@ async function leaveCompetitionRoom() {
     competition.lastState = null;
     $('#roomPanel').classList.add('hidden');
     await loadRooms();
-    showView('competition');
+    showView('home');
     setRoomActionMessage('Vous avez quitte la partie.', true);
   } catch (error) {
     console.error('leaveCompetitionRoom failed', error);
     const message = error.message || 'Impossible de quitter la partie. Reessayez.';
     setRoomActionMessage(message);
-    alert(message);
+    if (confirm(`${message}\nForcer la sortie locale ?`)) forceLocalCompetitionExit();
   } finally {
     setButtonLoading(button, false);
   }
+}
+
+function forceLocalCompetitionExit() {
+  if (competition.room?.id) {
+    const known = JSON.parse(localStorage.getItem('quizBibleParticipants') || '{}');
+    delete known[competition.room.id];
+    localStorage.setItem('quizBibleParticipants', JSON.stringify(known));
+  }
+  localStorage.removeItem('quizBibleCurrentRoomCode');
+  localStorage.removeItem('quizBibleCurrentRoomId');
+  stopCompetitionPolling();
+  setCompetitionImmersive(false);
+  competition.participant = null;
+  competition.room = null;
+  competition.round = null;
+  competition.lastState = null;
+  $('#roomPanel').classList.add('hidden');
+  showView('home');
 }
 
 function getStoredParticipant(roomId) {
@@ -581,6 +652,7 @@ async function adminLogout() {
 
 async function loadAdmin() {
   const data = await api('/api/admin/dashboard');
+  questionBanks = data.questionBanks || questionBanks;
   $('#adminQuestions').innerHTML = data.questions.map((question) => `
     <article class="admin-item">
       <strong>${escapeHtml(question.question)}</strong>
@@ -624,6 +696,28 @@ async function loadAdmin() {
     <p><strong>${data.aiErrors.length}</strong> erreurs Azure OpenAI.</p>
     ${data.aiErrors.slice(-5).reverse().map((error) => `<article class="admin-item"><strong>${escapeHtml(error.scope)}</strong><p>${escapeHtml(error.message)}</p></article>`).join('')}
   `;
+  $('#adminUsers').innerHTML = (data.users || []).map((user) => `
+    <article class="admin-item">
+      <strong>${escapeHtml(user.name || user.email)}</strong>
+      <p>${escapeHtml(user.email)} - ${escapeHtml(user.role)} - ${user.isActive === false ? 'desactive' : 'actif'}</p>
+      <div class="admin-item-actions">
+        <select data-user-role="${escapeHtml(user.id)}">
+          ${['admin', 'question_manager', 'host', 'player'].map((role) => `<option value="${role}" ${user.role === role ? 'selected' : ''}>${role}</option>`).join('')}
+        </select>
+        <button class="secondary" data-user-status="${escapeHtml(user.id)}">${user.isActive === false ? 'Activer' : 'Desactiver'}</button>
+      </div>
+    </article>
+  `).join('') || '<p>Aucun utilisateur.</p>';
+  $('#adminQuestionBanks').innerHTML = (data.questionBanks || []).map((bank) => {
+    const count = (data.bankQuestions || []).filter((question) => question.bankId === bank.id).length;
+    return `
+      <article class="admin-item">
+        <strong>${escapeHtml(bank.title)}</strong>
+        <p>${escapeHtml(bank.category)} - ${escapeHtml(bank.difficulty)} - ${count} questions - ${bank.isPublic ? 'publique' : 'privee'}</p>
+      </article>
+    `;
+  }).join('') || '<p>Aucune banque.</p>';
+  $('#bankQuestionBankSelect').innerHTML = (data.questionBanks || []).map((bank) => `<option value="${escapeHtml(bank.id)}">${escapeHtml(bank.title)}</option>`).join('') || '<option value="">Aucune banque</option>';
   $$('[data-edit]').forEach((button) => button.addEventListener('click', () => editQuestion(data.questions.find((q) => q.id === button.dataset.edit))));
   $$('[data-delete]').forEach((button) => button.addEventListener('click', () => deleteQuestion(button.dataset.delete)));
   $$('[data-toggle]').forEach((button) => button.addEventListener('click', () => toggleQuestion(data.questions.find((q) => q.id === button.dataset.toggle))));
@@ -632,6 +726,8 @@ async function loadAdmin() {
   $$('[data-admin-room-close]').forEach((button) => button.addEventListener('click', () => adminCloseRoom(button.dataset.adminRoomClose)));
   $$('[data-admin-room-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteRoom(button.dataset.adminRoomDelete)));
   $$('[data-admin-room-regen]').forEach((button) => button.addEventListener('click', () => adminRegenerateRoom(button.dataset.adminRoomRegen)));
+  $$('[data-user-role]').forEach((select) => select.addEventListener('change', () => adminUpdateUserRole(select.dataset.userRole, select.value)));
+  $$('[data-user-status]').forEach((button) => button.addEventListener('click', () => adminToggleUserStatus(button.dataset.userStatus, data.users.find((user) => user.id === button.dataset.userStatus))));
 }
 
 async function addQuestion(event) {
@@ -667,6 +763,45 @@ async function addChallenge(event) {
   });
   resetChallengeEditor();
   await Promise.all([loadAdmin(), loadChallenges()]);
+}
+
+async function addQuestionBank(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  await api('/api/question-banks', {
+    method: 'POST',
+    body: {
+      title: form.get('title'),
+      description: form.get('description'),
+      category: form.get('category'),
+      difficulty: form.get('difficulty'),
+      isPublic: form.get('isPublic') === 'on'
+    }
+  });
+  event.currentTarget?.reset?.();
+  await Promise.all([loadAdmin(), loadQuestionBanks()]);
+}
+
+async function addBankQuestion(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const bankId = form.get('bankId');
+  if (!bankId) return;
+  const bank = questionBanks.find((item) => item.id === bankId);
+  await api(`/api/question-banks/${encodeURIComponent(bankId)}/questions`, {
+    method: 'POST',
+    body: {
+      question: form.get('question'),
+      options: String(form.get('options')).split('|').map((item) => item.trim()),
+      correctAnswer: form.get('correctAnswer'),
+      explanation: form.get('explanation'),
+      reference: form.get('reference'),
+      category: bank?.category || 'random',
+      difficulty: bank?.difficulty || 'intermediaire'
+    }
+  });
+  event.currentTarget?.reset?.();
+  await loadAdmin();
 }
 
 async function deleteQuestion(id) {
@@ -758,6 +893,16 @@ async function adminRegenerateRoom(id) {
   await loadAdmin();
 }
 
+async function adminUpdateUserRole(id, role) {
+  await api(`/api/users/${encodeURIComponent(id)}/role`, { method: 'PATCH', body: { role } });
+  await loadAdmin();
+}
+
+async function adminToggleUserStatus(id, user) {
+  await api(`/api/users/${encodeURIComponent(id)}/status`, { method: 'PATCH', body: { isActive: user?.isActive === false } });
+  await loadAdmin();
+}
+
 function cryptoRandom() {
   const bytes = new Uint32Array(2);
   crypto.getRandomValues(bytes);
@@ -830,7 +975,11 @@ function renderPhase(data) {
   if (phase === 'waiting') {
     $('#competitionBoard').classList.add('hidden');
     $('#competitionResults').classList.remove('hidden');
-    $('#competitionResults').innerHTML = '<p class="eyebrow">Salle d attente</p><h2>Partagez le code</h2><p>La partie commencera quand le createur cliquera sur Lancer la partie.</p>';
+    const startAt = data.room?.scheduledStartAt ? new Date(data.room.scheduledStartAt) : null;
+    const startsLater = startAt && startAt > new Date();
+    $('#competitionResults').innerHTML = startsLater
+      ? `<p class="eyebrow">Competition planifiee</p><h2>La competition commence dans ${formatCountdown(startAt - new Date())}</h2><p>Les joueurs peuvent rejoindre le salon avant le lancement.</p>`
+      : '<p class="eyebrow">Salle d attente</p><h2>Partagez le code</h2><p>La partie commencera quand le createur cliquera sur Lancer la partie.</p>';
     return;
   }
   if (phase === 'starting') {
@@ -842,7 +991,7 @@ function renderPhase(data) {
   if (phase === 'finished') {
     $('#competitionBoard').classList.add('hidden');
     $('#competitionResults').classList.remove('hidden');
-    $('#competitionResults').innerHTML = '<p class="eyebrow">Classement final</p><h2>Partie terminee</h2><p>Le classement final est affiche ci-dessous.</p>';
+    renderCompetitionResults(data.results);
     return;
   }
   if (!question) return;
@@ -880,6 +1029,51 @@ function renderPhase(data) {
     `;
     $('#competitionReference').textContent = question.reference ? `Reference : ${question.reference}` : '';
   }
+}
+
+function renderCompetitionResults(results) {
+  const players = results?.players || [];
+  const winner = results?.winner;
+  $('#competitionResults').innerHTML = `
+    <p class="eyebrow">Classement final</p>
+    <h2>${winner ? `${escapeHtml(winner.playerName)} remporte la partie` : 'Partie terminee'}</h2>
+    <div class="result-actions">
+      <button class="primary" id="replayCompetition" type="button">Rejouer</button>
+      <button class="secondary" id="backHomeFromCompetition" type="button">Retour accueil</button>
+    </div>
+    <div class="final-results">
+      ${players.length ? players.map((player) => `
+        <article class="final-result-row">
+          <strong>${player.rank}. ${escapeHtml(player.playerName)}</strong>
+          <span>${Number(player.totalScore || 0)} pts</span>
+          <span>${Number(player.correctAnswers || 0)}/${Number(player.totalAnswers || 0)} bonnes reponses</span>
+          <span>${formatMs(player.averageResponseTimeMs)}</span>
+        </article>
+      `).join('') : '<p>Aucun resultat disponible.</p>'}
+    </div>
+  `;
+  $('#replayCompetition')?.addEventListener('click', () => startCompetitionRound({ currentTarget: $('#replayCompetition') }));
+  $('#backHomeFromCompetition')?.addEventListener('click', () => {
+    stopCompetitionPolling();
+    setCompetitionImmersive(false);
+    showView('home');
+  });
+}
+
+function formatMs(ms) {
+  const seconds = Math.round(Number(ms || 0) / 100) / 10;
+  return `${seconds}s moy.`;
+}
+
+function formatCountdown(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(Number(ms || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h${String(minutes % 60).padStart(2, '0')}`;
+  }
+  return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 }
 
 async function startCompetitionRound(event) {
@@ -1064,6 +1258,8 @@ function resetQuickRoomDefaults() {
   $('#roomCreateForm').elements.roundTimeLimit.value = 30;
   $('#roomCategorySelect').value = 'random';
   $('#roomLevelSelect').value = 'intermediaire';
+  updateQuestionBankVisibility();
+  updateScheduleVisibility();
 }
 
 function labelPhase(phase) {

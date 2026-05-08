@@ -13,6 +13,7 @@ const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX = 8;
 
 const sessions = new Map();
+const userSessions = new Map();
 const generationHits = new Map();
 
 const categories = [
@@ -139,7 +140,9 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === '/api/rooms' && req.method === 'GET') {
-    const rooms = readJson('rooms.json').filter((room) => room.isPublic && ['waiting', 'active'].includes(room.status) && new Date(room.endDate) > new Date());
+    const rooms = readJson('rooms.json')
+      .map(refreshRoomStatus)
+      .filter((room) => room.isPublic && ['waiting', 'active'].includes(room.status) && new Date(room.endDate) > new Date());
     sendJson(res, 200, { rooms: rooms.map(withRoomCounts) });
     return;
   }
@@ -150,7 +153,7 @@ async function handleApi(req, res, url) {
     room.id = `room-${crypto.randomUUID()}`;
     room.creatorId = room.creatorId || `creator-${crypto.randomUUID()}`;
     room.accessCode = room.accessCode || createAccessCode(rooms);
-    room.status = new Date(room.startDate) <= new Date() ? 'active' : 'waiting';
+    room.status = room.isScheduled && new Date(room.scheduledStartAt) > new Date() ? 'waiting' : 'active';
     room.createdAt = new Date().toISOString();
     rooms.push(room);
     writeJson('rooms.json', rooms);
@@ -170,13 +173,78 @@ async function handleApi(req, res, url) {
   if (roomStateMatch && req.method === 'GET') {
     const room = findRoom(decodeURIComponent(roomStateMatch[1]), url.searchParams.get('code'));
     if (!room) return sendJson(res, 404, { error: 'Salon introuvable ou code invalide' });
+    await ensureAutoStart(room);
     sendJson(res, 200, buildRoomState(room, url.searchParams.get('participantId')));
     return;
   }
 
-  const roomActionMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(join|leave|start-round|current-round|leaderboard|close)$/);
+  const roomActionMatch = url.pathname.match(/^\/api\/rooms\/([^/]+)\/(join|leave|start-round|start|current-round|leaderboard|results|close)$/);
   if (roomActionMatch) {
     await handleRoomAction(req, res, roomActionMatch, url);
+    return;
+  }
+
+  if (url.pathname === '/api/auth/register' && req.method === 'POST') {
+    const result = registerUser(await readBody(req));
+    if (result.error) return sendJson(res, result.status || 400, { error: result.error });
+    sendUserSession(res, result.user);
+    sendJson(res, 201, { user: publicUser(result.user) });
+    return;
+  }
+
+  if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+    const result = loginUser(await readBody(req));
+    if (result.error) return sendJson(res, result.status || 400, { error: result.error });
+    sendUserSession(res, result.user);
+    sendJson(res, 200, { user: publicUser(result.user) });
+    return;
+  }
+
+  if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
+    const token = getCookie(req, 'qb_user_session');
+    if (token) userSessions.delete(token);
+    res.setHeader('Set-Cookie', 'qb_user_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/api/auth/me' && req.method === 'GET') {
+    sendJson(res, 200, { user: publicUser(currentUser(req)) });
+    return;
+  }
+
+  if (url.pathname === '/api/users' && req.method === 'GET') {
+    const user = requireRole(req, ['admin']);
+    if (!user) return sendJson(res, 403, { error: 'Role admin requis' });
+    sendJson(res, 200, { users: readJson('users.json').map(publicUser) });
+    return;
+  }
+
+  const userRoleMatch = url.pathname.match(/^\/api\/users\/([^/]+)\/(role|status)$/);
+  if (userRoleMatch && req.method === 'PATCH') {
+    const user = requireRole(req, ['admin']);
+    if (!user) return sendJson(res, 403, { error: 'Role admin requis' });
+    const result = updateUserAdmin(decodeURIComponent(userRoleMatch[1]), userRoleMatch[2], await readBody(req));
+    if (result.error) return sendJson(res, result.status || 400, { error: result.error });
+    sendJson(res, 200, { user: publicUser(result.user) });
+    return;
+  }
+
+  const bankRootMatch = url.pathname.match(/^\/api\/question-banks(?:\/([^/]+))?$/);
+  if (bankRootMatch) {
+    await handleQuestionBankApi(req, res, bankRootMatch, url);
+    return;
+  }
+
+  const bankQuestionMatch = url.pathname.match(/^\/api\/question-banks\/([^/]+)\/questions$/);
+  if (bankQuestionMatch) {
+    await handleBankQuestionsApi(req, res, decodeURIComponent(bankQuestionMatch[1]));
+    return;
+  }
+
+  const questionItemMatch = url.pathname.match(/^\/api\/questions\/([^/]+)$/);
+  if (questionItemMatch && ['PATCH', 'DELETE'].includes(req.method)) {
+    await handleBankQuestionItemApi(req, res, decodeURIComponent(questionItemMatch[1]));
     return;
   }
 
@@ -249,6 +317,9 @@ async function handleAdminApi(req, res, url) {
       rounds: readJson('rounds.json'),
       roundQuestions: readJson('roundQuestions.json'),
       answers: readJson('answers.json'),
+      users: readJson('users.json').map(publicUser),
+      questionBanks: readJson('questionBanks.json'),
+      bankQuestions: readJson('bankQuestions.json'),
       aiErrors: readJson('aiErrors.json'),
       categories,
       levels
@@ -378,13 +449,22 @@ async function handleRoomAction(req, res, match, url) {
     return;
   }
 
-  if (action === 'start-round' && req.method === 'POST') {
+  if ((action === 'start-round' || action === 'start') && req.method === 'POST') {
     const body = await readBody(req);
     const allowed = body.creatorId === room.creatorId || isAdmin(req);
     if (!allowed) return sendJson(res, 403, { error: 'Createur ou admin requis' });
-    const round = createRound(room, 'starting');
-    const questions = await createQuestionsForRound(room, round);
-    sendJson(res, 201, buildRoomState(findRoom(room.id, code), body.participantId));
+    const now = new Date();
+    if (room.isScheduled && new Date(room.scheduledStartAt) > now) {
+      return sendJson(res, 409, { error: `La competition commence dans ${formatDuration(new Date(room.scheduledStartAt).getTime() - now.getTime())}.` });
+    }
+    if (new Date(room.endDate) <= now) return sendJson(res, 409, { error: 'Le creneau de competition est termine.' });
+    try {
+      const round = createRound(room, 'starting');
+      await createQuestionsForRound(room, round);
+      sendJson(res, 201, buildRoomState(findRoom(room.id, code), body.participantId));
+    } catch (error) {
+      sendJson(res, 400, { error: error.message || 'Impossible de lancer la partie.' });
+    }
     return;
   }
 
@@ -404,6 +484,11 @@ async function handleRoomAction(req, res, match, url) {
     return;
   }
 
+  if (action === 'results' && req.method === 'GET') {
+    sendJson(res, 200, { results: roomResults(room.id) });
+    return;
+  }
+
   if (action === 'close' && req.method === 'POST') {
     const body = await readBody(req);
     const allowed = body.creatorId === room.creatorId || isAdmin(req);
@@ -416,10 +501,115 @@ async function handleRoomAction(req, res, match, url) {
   sendJson(res, 404, { error: 'Action salon introuvable' });
 }
 
+async function handleQuestionBankApi(req, res, match) {
+  const bankId = match[1] ? decodeURIComponent(match[1]) : null;
+  if (!bankId && req.method === 'GET') {
+    const banks = readJson('questionBanks.json').filter((bank) => bank.isActive !== false && (bank.isPublic !== false || canManageBank(req, bank)));
+    sendJson(res, 200, { questionBanks: banks });
+    return;
+  }
+  if (!bankId && req.method === 'POST') {
+    const user = requireRole(req, ['admin', 'question_manager']);
+    if (!user) return sendJson(res, 403, { error: 'Role question_manager requis' });
+    const bank = sanitizeQuestionBank(await readBody(req), user);
+    const banks = readJson('questionBanks.json');
+    bank.id = `qb-${crypto.randomUUID()}`;
+    bank.createdAt = new Date().toISOString();
+    bank.updatedAt = bank.createdAt;
+    banks.push(bank);
+    writeJson('questionBanks.json', banks);
+    sendJson(res, 201, { questionBank: bank });
+    return;
+  }
+  const banks = readJson('questionBanks.json');
+  const bank = banks.find((item) => item.id === bankId);
+  if (!bank) return sendJson(res, 404, { error: 'Banque introuvable' });
+  if (req.method === 'GET') {
+    if (bank.isPublic === false && !canManageBank(req, bank)) return sendJson(res, 403, { error: 'Acces refuse' });
+    sendJson(res, 200, { questionBank: bank });
+    return;
+  }
+  if (req.method === 'PATCH') {
+    if (!canManageBank(req, bank)) return sendJson(res, 403, { error: 'Acces refuse' });
+    Object.assign(bank, sanitizeQuestionBank(await readBody(req), currentUser(req) || { id: bank.createdBy }), { id: bank.id, createdBy: bank.createdBy, createdAt: bank.createdAt, updatedAt: new Date().toISOString() });
+    writeJson('questionBanks.json', banks);
+    sendJson(res, 200, { questionBank: bank });
+    return;
+  }
+  if (req.method === 'DELETE') {
+    if (!canManageBank(req, bank)) return sendJson(res, 403, { error: 'Acces refuse' });
+    writeJson('questionBanks.json', banks.filter((item) => item.id !== bank.id));
+    writeJson('bankQuestions.json', readJson('bankQuestions.json').filter((question) => question.bankId !== bank.id));
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  sendJson(res, 405, { error: 'Methode non autorisee' });
+}
+
+async function handleBankQuestionsApi(req, res, bankId) {
+  const bank = readJson('questionBanks.json').find((item) => item.id === bankId);
+  if (!bank) return sendJson(res, 404, { error: 'Banque introuvable' });
+  if (req.method === 'GET') {
+    if (bank.isPublic === false && !canManageBank(req, bank)) return sendJson(res, 403, { error: 'Acces refuse' });
+    sendJson(res, 200, { questions: readJson('bankQuestions.json').filter((question) => question.bankId === bankId) });
+    return;
+  }
+  if (req.method === 'POST') {
+    if (!canManageBank(req, bank)) return sendJson(res, 403, { error: 'Acces refuse' });
+    const questions = readJson('bankQuestions.json');
+    const question = sanitizeBankQuestion(await readBody(req), bankId);
+    question.id = `bq-${crypto.randomUUID()}`;
+    questions.push(question);
+    writeJson('bankQuestions.json', questions);
+    sendJson(res, 201, { question });
+    return;
+  }
+  sendJson(res, 405, { error: 'Methode non autorisee' });
+}
+
+async function handleBankQuestionItemApi(req, res, questionId) {
+  const questions = readJson('bankQuestions.json');
+  const question = questions.find((item) => item.id === questionId);
+  if (!question) return sendJson(res, 404, { error: 'Question introuvable' });
+  const bank = readJson('questionBanks.json').find((item) => item.id === question.bankId);
+  if (!bank || !canManageBank(req, bank)) return sendJson(res, 403, { error: 'Acces refuse' });
+  if (req.method === 'PATCH') {
+    Object.assign(question, sanitizeBankQuestion(await readBody(req), question.bankId), { id: question.id, bankId: question.bankId });
+    writeJson('bankQuestions.json', questions);
+    sendJson(res, 200, { question });
+    return;
+  }
+  if (req.method === 'DELETE') {
+    writeJson('bankQuestions.json', questions.filter((item) => item.id !== question.id));
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  sendJson(res, 405, { error: 'Methode non autorisee' });
+}
+
+async function ensureAutoStart(room) {
+  const fresh = refreshRoomStatus(room);
+  if (!fresh.autoStart || fresh.status !== 'active') return;
+  const activeRound = readJson('rounds.json').some((round) => round.roomId === fresh.id && round.status === 'active');
+  if (activeRound) return;
+  const round = createRound(fresh, 'starting');
+  try {
+    await createQuestionsForRound(fresh, round);
+  } catch (error) {
+    setRoundPhase(round.id, { status: 'failed', phase: 'finished' });
+    updateRoomStatus(fresh.id, 'waiting');
+    logAiError('auto-start', error.message || 'Auto start impossible');
+  }
+}
+
 function sanitizeRoom(body) {
   const now = new Date();
-  const defaultStart = body.startDate ? new Date(body.startDate) : now;
-  const defaultEnd = body.endDate ? new Date(body.endDate) : new Date(defaultStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const isScheduled = body.isScheduled === true;
+  const durationMinutes = clamp(Number(body.durationMinutes || body.roundTimeLimit || 30), 5, 240);
+  const scheduledStart = body.scheduledStartAt ? new Date(body.scheduledStartAt) : now;
+  const scheduledEnd = body.scheduledEndAt ? new Date(body.scheduledEndAt) : new Date(scheduledStart.getTime() + durationMinutes * 60 * 1000);
+  const defaultStart = isScheduled ? scheduledStart : (body.startDate ? new Date(body.startDate) : now);
+  const defaultEnd = isScheduled ? scheduledEnd : (body.endDate ? new Date(body.endDate) : new Date(defaultStart.getTime() + durationMinutes * 60 * 1000));
   return {
     id: sanitizeString(body.id || '').slice(0, 80),
     name: sanitizeString(body.name || 'Salon biblique').slice(0, 120),
@@ -432,8 +622,13 @@ function sanitizeRoom(body) {
     status: ['waiting', 'starting', 'question_active', 'question_reveal', 'between_questions', 'closed', 'finished'].includes(body.status) ? body.status : 'waiting',
     startDate: defaultStart.toISOString(),
     endDate: defaultEnd > defaultStart ? defaultEnd.toISOString() : new Date(defaultStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+    isScheduled,
+    scheduledStartAt: isScheduled ? defaultStart.toISOString() : null,
+    scheduledEndAt: isScheduled ? (defaultEnd > defaultStart ? defaultEnd : new Date(defaultStart.getTime() + durationMinutes * 60 * 1000)).toISOString() : null,
+    durationMinutes,
+    autoStart: body.autoStart === true,
     questionTimeLimit: clamp(Number(body.questionTimeLimit || 30), 15, 60),
-    roundTimeLimit: clamp(Number(body.roundTimeLimit || 30), 5, 120),
+    roundTimeLimit: durationMinutes,
     questionsPerRound: clamp(Number(body.questionsPerRound || 10), 1, 20),
     questionMode: body.questionMode === 'personalized' ? 'personalized' : 'same',
     questionTypes: Array.isArray(body.questionTypes) && body.questionTypes.length
@@ -441,6 +636,7 @@ function sanitizeRoom(body) {
       : ['qcm', 'vrai_faux', 'personnage'],
     explanationsEnabled: body.explanationsEnabled !== false,
     questionSource: body.questionSource === 'local' ? 'local' : 'ai',
+    questionBankId: sanitizeString(body.questionBankId || '').slice(0, 100),
     createdAt: body.createdAt || new Date().toISOString()
   };
 }
@@ -472,7 +668,9 @@ function findRoom(idOrCode, code) {
 function refreshRoomStatus(room) {
   if (['closed', 'finished', 'starting', 'question_active', 'question_reveal', 'between_questions'].includes(room.status)) return room;
   const now = new Date();
-  const status = now > new Date(room.endDate) ? 'finished' : 'waiting';
+  const startsAt = new Date(room.scheduledStartAt || room.startDate);
+  const endsAt = new Date(room.scheduledEndAt || room.endDate);
+  const status = now > endsAt ? 'finished' : (now >= startsAt ? 'active' : 'waiting');
   if (room.status !== status) {
     const rooms = readJson('rooms.json');
     const index = rooms.findIndex((item) => item.id === room.id);
@@ -527,6 +725,7 @@ function createRound(room, phase = 'starting') {
     roundNumber: roomRounds.length + 1,
     status: 'active',
     phase,
+    gameStatus: phase === 'finished' ? 'game_finished' : phase,
     currentQuestionIndex: 0,
     questionStartedAt: null,
     questionEndsAt: null,
@@ -534,7 +733,7 @@ function createRound(room, phase = 'starting') {
     nextQuestionAt: firstQuestionAt.toISOString(),
     startsAt: startsAt.toISOString(),
     endsAt: new Date(startsAt.getTime() + room.roundTimeLimit * 60 * 1000).toISOString(),
-    generatedByAI: azureConfigured(),
+    generatedByAI: room.questionSource !== 'local' && azureConfigured(),
     validationStatus: 'pending',
     createdAt: startsAt.toISOString()
   };
@@ -678,6 +877,7 @@ async function createQuestionsForRound(room, round) {
     count: room.questionsPerRound,
     questionTypes: room.questionTypes || ['qcm', 'vrai_faux', 'personnage'],
     questionSource: room.questionSource || 'ai',
+    questionBankId: room.questionBankId,
     recentQuestions: recentRoomQuestionTexts(room.id)
   });
   const saved = generated.questions.map((question, index) => sanitizeRoundQuestion({
@@ -696,10 +896,15 @@ async function createQuestionsForRound(room, round) {
 async function generateRoundQuestions(input) {
   const count = clamp(Number(input.count || 10), 1, 20);
   if (input.questionSource === 'local') {
+    if (!input.questionBankId) throw new Error('Choisissez une banque de questions locales.');
+    const localPool = selectBankQuestions(input.questionBankId, count);
+    if (localPool.length < count) {
+      throw new Error(`La banque locale ne contient que ${localPool.length} question(s) active(s) pour ${count} demandee(s).`);
+    }
     return {
-      questions: selectQuestions(input.category, input.difficulty || input.level, count).map((question) => ({
+      questions: localPool.slice(0, count).map((question) => ({
         ...question,
-        difficulty: question.level,
+        difficulty: question.difficulty || question.level,
         aiValidationStatus: 'local_selected',
         aiValidationNotes: 'Question locale choisie pour le salon'
       })),
@@ -735,6 +940,13 @@ async function generateRoundQuestions(input) {
     validationStatus: 'fallback_local',
     validation: { results: [] }
   };
+}
+
+function selectBankQuestions(bankId, count) {
+  const bank = readJson('questionBanks.json').find((item) => item.id === bankId && item.isActive !== false);
+  if (!bank) return [];
+  const questions = readJson('bankQuestions.json').filter((question) => question.bankId === bank.id && question.isActive !== false);
+  return shuffle(questions).slice(0, count);
 }
 
 async function generateCompetitionQuestions(input, count) {
@@ -974,6 +1186,7 @@ function buildRoomState(roomInput, participantId) {
     countdownSeconds,
     score: participant?.totalScore || 0,
     leaderboard: roomLeaderboard(room.id),
+    results: phase === 'finished' ? roomResults(room.id) : null,
     questionIndex: round ? Number(round.currentQuestionIndex || 0) : 0,
     totalQuestions: questions.length
   };
@@ -1000,6 +1213,35 @@ function roomLeaderboard(roomId) {
     .filter((item) => item.roomId === roomId && !item.leftAt)
     .sort((a, b) => b.totalScore - a.totalScore || a.joinedAt.localeCompare(b.joinedAt))
     .map((item, index) => ({ rank: index + 1, ...item }));
+}
+
+function roomResults(roomId) {
+  recalculateParticipantScores(roomId);
+  const participants = readJson('roomParticipants.json').filter((item) => item.roomId === roomId);
+  const roundIds = readJson('rounds.json').filter((round) => round.roomId === roomId).map((round) => round.id);
+  const answers = readJson('answers.json').filter((answer) => roundIds.includes(answer.roundId) && answer.isFinalized);
+  const players = participants.map((participant) => {
+    const participantAnswers = answers.filter((answer) => answer.participantId === participant.id);
+    const correctAnswers = participantAnswers.filter((answer) => answer.isCorrect).length;
+    const averageResponseTimeMs = participantAnswers.length
+      ? Math.round(participantAnswers.reduce((sum, answer) => sum + Number(answer.responseTimeMs || 0), 0) / participantAnswers.length)
+      : 0;
+    return {
+      participantId: participant.id,
+      playerName: participant.playerName,
+      totalScore: participant.totalScore || 0,
+      correctAnswers,
+      totalAnswers: participantAnswers.length,
+      averageResponseTimeMs,
+      leftAt: participant.leftAt || null
+    };
+  }).sort((a, b) => b.totalScore - a.totalScore || b.correctAnswers - a.correctAnswers || a.averageResponseTimeMs - b.averageResponseTimeMs);
+  return {
+    roomId,
+    status: 'game_finished',
+    winner: players[0] || null,
+    players: players.map((player, index) => ({ rank: index + 1, ...player }))
+  };
 }
 
 function updateRoomStatus(roomId, status) {
@@ -1058,6 +1300,18 @@ function createAccessCode(existingRooms = readJson('rooms.json')) {
     if (!used.has(code)) return code;
   }
   return `BIBLE-${crypto.randomInt(1000, 10000)}`;
+}
+
+function formatDuration(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return `${hours}h${String(rest).padStart(2, '0')}`;
+  }
+  return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 }
 
 function loadEnv() {
@@ -1387,6 +1641,124 @@ function sanitizeChallenge(body) {
     isActive: body.isActive !== false,
     createdAt: body.createdAt || new Date().toISOString()
   };
+}
+
+function sanitizeQuestionBank(body, user) {
+  return {
+    title: sanitizeString(body.title || 'Banque de questions').slice(0, 160),
+    description: sanitizeString(body.description || '').slice(0, 600),
+    category: sanitizeString(body.category || 'random').slice(0, 80),
+    difficulty: sanitizeString(body.difficulty || body.level || 'intermediaire').slice(0, 80),
+    language: sanitizeString(body.language || 'fr').slice(0, 20),
+    createdBy: sanitizeString(body.createdBy || user?.id || '').slice(0, 100),
+    isPublic: body.isPublic !== false,
+    isActive: body.isActive !== false
+  };
+}
+
+function sanitizeBankQuestion(body, bankId) {
+  const question = sanitizeQuestion(body);
+  return {
+    id: question.id,
+    bankId,
+    question: question.question,
+    type: question.type,
+    options: question.options,
+    correctAnswer: question.correctAnswer,
+    explanation: question.explanation,
+    reference: question.reference,
+    category: question.category,
+    difficulty: question.level,
+    tags: Array.isArray(body.tags) ? body.tags.map((tag) => sanitizeString(tag).slice(0, 40)).filter(Boolean).slice(0, 12) : [],
+    isActive: question.isActive
+  };
+}
+
+function registerUser(body) {
+  const users = readJson('users.json');
+  const email = sanitizeString(body.email || '').toLowerCase();
+  const name = sanitizeString(body.name || body.playerName || 'Utilisateur').slice(0, 80);
+  const password = String(body.password || '');
+  if (!email || !email.includes('@')) return { error: 'Email invalide', status: 400 };
+  if (password.length < 6) return { error: 'Mot de passe trop court', status: 400 };
+  if (users.some((user) => user.email === email)) return { error: 'Utilisateur deja existant', status: 409 };
+  const role = users.length === 0 ? 'admin' : 'player';
+  const user = {
+    id: `user-${crypto.randomUUID()}`,
+    name,
+    email,
+    passwordHash: hashPassword(password),
+    role,
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  users.push(user);
+  writeJson('users.json', users);
+  return { user };
+}
+
+function loginUser(body) {
+  const email = sanitizeString(body.email || body.username || '').toLowerCase();
+  const user = readJson('users.json').find((item) => item.email === email);
+  if (!user || !user.isActive || user.passwordHash !== hashPassword(String(body.password || ''))) return { error: 'Identifiants invalides', status: 401 };
+  return { user };
+}
+
+function updateUserAdmin(userId, field, body) {
+  const users = readJson('users.json');
+  const user = users.find((item) => item.id === userId);
+  if (!user) return { error: 'Utilisateur introuvable', status: 404 };
+  if (field === 'role') {
+    const role = sanitizeString(body.role || '');
+    if (!['admin', 'question_manager', 'host', 'player'].includes(role)) return { error: 'Role invalide', status: 400 };
+    user.role = role;
+  }
+  if (field === 'status') user.isActive = body.isActive !== false;
+  user.updatedAt = new Date().toISOString();
+  writeJson('users.json', users);
+  return { user };
+}
+
+function sendUserSession(res, user) {
+  const token = crypto.randomBytes(32).toString('hex');
+  userSessions.set(token, { userId: user.id, createdAt: Date.now() });
+  res.setHeader('Set-Cookie', `qb_user_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+}
+
+function currentUser(req) {
+  const token = getCookie(req, 'qb_user_session');
+  const session = token && userSessions.get(token);
+  if (!session) return null;
+  if (Date.now() - session.createdAt > 7 * 24 * 60 * 60 * 1000) {
+    userSessions.delete(token);
+    return null;
+  }
+  const user = readJson('users.json').find((item) => item.id === session.userId && item.isActive !== false);
+  return user || null;
+}
+
+function requireRole(req, roles) {
+  const user = currentUser(req);
+  if (user && roles.includes(user.role)) return user;
+  if (roles.includes('admin') && isAdmin(req)) return { id: 'legacy-admin', role: 'admin', name: 'Admin' };
+  return null;
+}
+
+function canManageBank(req, bank) {
+  const user = currentUser(req);
+  if (isAdmin(req) || user?.role === 'admin') return true;
+  return user?.role === 'question_manager' && bank.createdBy === user.id;
+}
+
+function publicUser(user) {
+  if (!user) return null;
+  const { passwordHash, ...safe } = user;
+  return safe;
+}
+
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(`quiz-bible:${password}`).digest('hex');
 }
 
 function sanitizeString(value) {

@@ -78,11 +78,22 @@
                 <select name="questionTypes" multiple size="4" id="roomQuestionTypes"></select>
               </label>
               <label>Source des questions
-                <select name="questionSource">
+                <select name="questionSource" id="roomQuestionSource">
                   <option value="ai" selected>IA Azure si disponible</option>
                   <option value="local">Questions locales</option>
                 </select>
               </label>
+              <label class="hidden" id="roomQuestionBankWrap">Banque de questions
+                <select name="questionBankId" id="roomQuestionBankSelect"></select>
+              </label>
+              <label class="check"><input name="isScheduled" type="checkbox" id="roomIsScheduled"> Planifier la competition</label>
+              <div class="schedule-options hidden" id="roomScheduleOptions">
+                <label>Date de debut <input name="scheduledStartDate" type="date"></label>
+                <label>Heure de debut <input name="scheduledStartTime" type="time"></label>
+                <label>Duree du creneau (minutes) <input name="durationMinutes" type="number" value="30" min="5" max="240"></label>
+                <label>Fin manuelle <input name="scheduledEndAt" type="datetime-local"></label>
+                <label class="check"><input name="autoStart" type="checkbox"> Lancement automatique</label>
+              </div>
               <label class="check"><input name="isPublic" type="checkbox" checked> Salon public</label>
               <label class="check"><input name="explanationsEnabled" type="checkbox" checked> Afficher les explications</label>
             </div>
@@ -308,6 +319,37 @@
               <h3>Questions IA et erreurs Azure</h3>
               <div id="adminAi"></div>
             </div>
+          </div>
+          <div class="admin-layout">
+            <form class="editor" id="bankEditor">
+              <h3>Creer une banque</h3>
+              <input name="title" placeholder="Titre" required>
+              <textarea name="description" placeholder="Description"></textarea>
+              <select name="category" id="bankCategorySelect"></select>
+              <select name="difficulty" id="bankLevelSelect"></select>
+              <label class="check"><input name="isPublic" type="checkbox" checked> Publique</label>
+              <button class="primary" type="submit">Creer la banque</button>
+            </form>
+            <div class="admin-list">
+              <h3>Utilisateurs</h3>
+              <div id="adminUsers"></div>
+            </div>
+          </div>
+          <div class="admin-layout">
+            <div class="admin-list">
+              <h3>Banques de questions</h3>
+              <div id="adminQuestionBanks"></div>
+            </div>
+            <form class="editor" id="bankQuestionEditor">
+              <h3>Ajouter une question a une banque</h3>
+              <select name="bankId" id="bankQuestionBankSelect"></select>
+              <textarea name="question" placeholder="Question" required></textarea>
+              <input name="options" placeholder="Options separees par |" required>
+              <input name="correctAnswer" placeholder="Bonne reponse" required>
+              <textarea name="explanation" placeholder="Explication" required></textarea>
+              <input name="reference" placeholder="Reference">
+              <button class="primary" type="submit">Ajouter</button>
+            </form>
           </div>
         </div>
       </section>
