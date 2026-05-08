@@ -509,12 +509,26 @@ async function leaveCompetitionRoom() {
   if (!competition.room) return;
   const participant = competition.participant || getStoredParticipant(competition.room.id);
   if (!participant) return;
+  if (!confirm('Voulez-vous vraiment quitter la partie ?')) return;
   await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/leave?code=${encodeURIComponent(competition.room.accessCode)}`, {
     method: 'POST',
     body: { participantId: participant.id || participant }
   });
+  const known = JSON.parse(localStorage.getItem('quizBibleParticipants') || '{}');
+  delete known[competition.room.id];
+  localStorage.setItem('quizBibleParticipants', JSON.stringify(known));
+  localStorage.removeItem('quizBibleCurrentRoomCode');
+  localStorage.removeItem('quizBibleCurrentRoomId');
+  stopCompetitionPolling();
+  setCompetitionImmersive(false);
   competition.participant = null;
-  await openRoom(competition.room.id);
+  competition.room = null;
+  competition.round = null;
+  competition.lastState = null;
+  $('#roomPanel').classList.add('hidden');
+  await loadRooms();
+  showView('competition');
+  setRoomActionMessage('Vous avez quitte la partie.', true);
 }
 
 function getStoredParticipant(roomId) {
@@ -768,6 +782,7 @@ function renderCompetitionState(data) {
   competition.room = data.room;
   competition.participant = data.participant;
   competition.round = data.round;
+  setCompetitionImmersive(['starting', 'question_active', 'question_reveal', 'between_questions'].includes(data.phase));
   const room = data.room;
   $('#roomPanel').classList.remove('hidden');
   $('#roomStatus').textContent = `${labelPhase(data.phase || room.status)} - ${room.difficulty}`;
@@ -825,22 +840,29 @@ function renderPhase(data) {
     const selected = data.currentAnswer?.selectedAnswer === option;
     const correct = question.correctAnswer && question.correctAnswer === option;
     const wrong = selected && question.correctAnswer && question.correctAnswer !== option;
-    return `<button class="answer ${correct ? 'correct' : ''} ${wrong ? 'wrong' : ''}" type="button" ${data.currentAnswer || phase !== 'question_active' ? 'disabled' : ''}>${escapeHtml(option)}</button>`;
+    return `<button class="answer ${selected ? 'selected' : ''} ${correct ? 'correct' : ''} ${wrong ? 'wrong' : ''}" type="button" ${phase !== 'question_active' ? 'disabled' : ''}>${escapeHtml(option)}</button>`;
   }).join('');
-  if (phase === 'question_active' && !data.currentAnswer) {
+  if (phase === 'question_active') {
     $$('#competitionAnswers .answer').forEach((button) => button.addEventListener('click', () => submitCompetitionAnswer(button, button.textContent)));
   }
   $('#competitionFeedback').classList.remove('hidden');
   $('#competitionNext').classList.add('hidden');
   if (phase === 'question_active') {
-    $('#competitionFeedbackTitle').textContent = data.currentAnswer ? 'Reponse enregistree' : 'A vous de jouer';
-    $('#competitionFeedbackText').textContent = data.currentAnswer ? 'Attente des autres joueurs. Les scores seront mis a jour a la fin du chrono.' : 'Repondez avant la fin du chrono.';
+    $('#competitionFeedbackTitle').textContent = data.currentAnswer ? 'Reponse selectionnee' : 'A vous de jouer';
+    $('#competitionFeedbackText').textContent = data.currentAnswer ? 'Reponse selectionnee — tu peux changer avant la fin du chrono.' : 'Repondez avant la fin du chrono.';
     $('#competitionReference').textContent = '';
     return;
   }
   if (phase === 'question_reveal' || phase === 'between_questions') {
+    const currentPoints = Number(data.currentAnswer?.totalPoints || 0);
+    const leaderboard = renderInlineLeaderboard(data.leaderboard || []);
     $('#competitionFeedbackTitle').textContent = `Bonne reponse : ${question.correctAnswer}`;
-    $('#competitionFeedbackText').textContent = `${question.explanation || ''} Prochaine question dans ${data.countdownSeconds || 0}s.`;
+    $('#competitionFeedbackText').innerHTML = `
+      <span>${escapeHtml(question.explanation || 'Explication indisponible.')}</span>
+      <strong>Points gagnes : ${currentPoints}</strong>
+      <span>Prochaine question dans ${data.countdownSeconds || 0}...</span>
+      ${leaderboard}
+    `;
     $('#competitionReference').textContent = question.reference ? `Reference : ${question.reference}` : '';
   }
 }
@@ -870,6 +892,11 @@ async function startCompetitionRound(event) {
 
 async function submitCompetitionAnswer(button, selectedAnswer) {
   if (!competition.round || !competition.lastState?.currentQuestion) return;
+  $$('#competitionAnswers .answer').forEach((answerButton) => answerButton.classList.toggle('selected', answerButton === button));
+  $('#competitionFeedback').classList.remove('hidden');
+  $('#competitionFeedbackTitle').textContent = 'Reponse selectionnee';
+  $('#competitionFeedbackText').textContent = 'Reponse selectionnee — tu peux changer avant la fin du chrono.';
+  $('#competitionReference').textContent = '';
   setButtonLoading(button, true);
   try {
     const participant = competition.participant || getStoredParticipant(competition.room.id);
@@ -901,6 +928,21 @@ async function loadCompetitionState() {
   const participantId = competition.participant?.id || getStoredParticipant(competition.room.id) || '';
   const data = await api(`/api/rooms/${encodeURIComponent(competition.room.accessCode || competition.room.id)}/state?participantId=${encodeURIComponent(participantId)}&code=${encodeURIComponent(competition.room.accessCode || '')}`);
   renderCompetitionState(data);
+}
+
+function setCompetitionImmersive(active) {
+  if (active && !$('#competitionView')?.classList.contains('active')) showView('competition');
+  document.body.classList.toggle('competition-immersive', active);
+}
+
+function renderInlineLeaderboard(leaderboard) {
+  if (!leaderboard.length) return '<div class="mini-leaderboard"><strong>Classement provisoire</strong><span>Aucun score pour le moment.</span></div>';
+  return `
+    <div class="mini-leaderboard">
+      <strong>Classement provisoire</strong>
+      ${leaderboard.slice(0, 5).map((row) => `<span>${row.rank}. ${escapeHtml(row.playerName)} - ${Number(row.totalScore || 0)} pts</span>`).join('')}
+    </div>
+  `;
 }
 
 function startCompetitionPolling() {

@@ -475,6 +475,12 @@ textarea {
   font-weight: 800;
 }
 
+.answer.selected {
+  border-color: var(--primary-2);
+  background: rgba(30, 95, 138, 0.14);
+  box-shadow: inset 0 0 0 2px rgba(30, 95, 138, 0.18);
+}
+
 .answer.correct {
   border-color: var(--good);
   background: rgba(25, 135, 84, 0.14);
@@ -493,6 +499,82 @@ textarea {
 .reference {
   color: var(--gold);
   font-weight: 800;
+}
+
+.mini-leaderboard {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+}
+
+.mini-leaderboard span {
+  color: var(--muted);
+}
+
+body.competition-immersive {
+  overflow: hidden;
+  background: var(--bg);
+}
+
+body.competition-immersive .topbar,
+body.competition-immersive #competitionView > .section-head,
+body.competition-immersive #roomCreateForm,
+body.competition-immersive #roomJoinForm,
+body.competition-immersive #roomActionMessage,
+body.competition-immersive #roomsGrid,
+body.competition-immersive .competition-stats,
+body.competition-immersive .table-wrap,
+body.competition-immersive .admin-list,
+body.competition-immersive #copyRoomLink,
+body.competition-immersive #startRound {
+  display: none !important;
+}
+
+body.competition-immersive #competitionView {
+  width: 100%;
+  min-height: 100vh;
+  padding: clamp(0.75rem, 2vw, 1.5rem);
+}
+
+body.competition-immersive .competition-layout,
+body.competition-immersive .competition-main,
+body.competition-immersive .room-panel {
+  display: block;
+}
+
+body.competition-immersive .room-head {
+  box-shadow: none;
+  border: 0;
+  background: transparent;
+  padding: 0 0 0.8rem;
+}
+
+body.competition-immersive .room-head > div:first-child {
+  display: none;
+}
+
+body.competition-immersive #leaveRoom {
+  width: auto;
+  min-height: 2.35rem;
+  padding: 0 0.75rem;
+  opacity: 0.82;
+}
+
+body.competition-immersive .game-board,
+body.competition-immersive .results {
+  width: min(920px, 100%);
+  margin: 0 auto;
+}
+
+body.competition-immersive .game-meta {
+  align-items: center;
+  padding: 0.35rem 0;
+}
+
+body.competition-immersive .question-card,
+body.competition-immersive .feedback,
+body.competition-immersive .results {
+  box-shadow: none;
 }
 
 .card-grid {

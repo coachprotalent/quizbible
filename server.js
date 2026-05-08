@@ -870,11 +870,26 @@ function submitRoundAnswer(roundId, body) {
   const participant = participants.find((item) => item.id === body.participantId && item.roomId === round.roomId && !item.leftAt);
   if (!participant) return { error: 'Participant introuvable', status: 404 };
   const answers = readJson('answers.json');
-  if (answers.some((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId === participant.id)) {
-    return { accepted: true, alreadyAnswered: true, state: buildRoomState(readJson('rooms.json').find((item) => item.id === round.roomId), participant.id) };
-  }
   const responseTimeMs = clamp(Date.now() - new Date(round.questionStartedAt).getTime(), 0, 60 * 1000);
   const selectedAnswer = sanitizeString(body.selectedAnswer || '').slice(0, 180);
+  const existingAnswer = answers.find((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId === participant.id);
+  if (existingAnswer) {
+    existingAnswer.selectedAnswer = selectedAnswer;
+    existingAnswer.responseTimeMs = responseTimeMs;
+    existingAnswer.answeredAt = new Date().toISOString();
+    existingAnswer.isCorrect = false;
+    existingAnswer.basePoints = 0;
+    existingAnswer.speedBonus = 0;
+    existingAnswer.totalPoints = 0;
+    existingAnswer.isFinalized = false;
+    writeJson('answers.json', answers);
+    return {
+      accepted: true,
+      updated: true,
+      answer: existingAnswer,
+      state: buildRoomState(readJson('rooms.json').find((item) => item.id === round.roomId), participant.id)
+    };
+  }
   const answer = {
     id: `ans-${crypto.randomUUID()}`,
     roundId,
