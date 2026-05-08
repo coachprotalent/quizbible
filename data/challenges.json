@@ -1,0 +1,122 @@
+[
+  {
+    "id": "ch-moise",
+    "title": "Challenge 7 jours : Vie de Moise",
+    "description": "De l'appel de Moise a la sortie d'Egypte, avec des reperes de foi et d'histoire.",
+    "category": "pentateuque",
+    "level": "debutant",
+    "days": 7,
+    "progression": 0,
+    "summary": "Comprendre l'appel, l'Exode, l'alliance et la marche au desert.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-david",
+    "title": "Challenge 7 jours : Vie de David",
+    "description": "Berger, roi, psalmiste : suivre les grands episodes de la vie de David.",
+    "category": "personnages",
+    "level": "debutant",
+    "days": 7,
+    "progression": 0,
+    "summary": "Relier les recits de Samuel aux themes du courage, de la repentance et de la royaute.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-daniel",
+    "title": "Challenge 7 jours : Vie de Daniel",
+    "description": "Fidelite en exil, songes, empires et esperance.",
+    "category": "contexte_historique",
+    "level": "intermediaire",
+    "days": 7,
+    "progression": 0,
+    "summary": "Distinguer le recit biblique et les reperes historiques de Babylone et de la Perse.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-paul",
+    "title": "Challenge 7 jours : Vie de Paul",
+    "description": "Conversion, voyages missionnaires, eglises et epitres.",
+    "category": "epitres",
+    "level": "intermediaire",
+    "days": 7,
+    "progression": 0,
+    "summary": "Suivre le fil des Actes et des lettres pauliniennes.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-prophetes-majeurs",
+    "title": "Challenge 7 jours : Les prophetes majeurs",
+    "description": "Esaie, Jeremie, Ezechiel et Daniel dans leur contexte.",
+    "category": "livres_prophetiques",
+    "level": "avance",
+    "days": 7,
+    "progression": 0,
+    "summary": "Identifier les messages, les contextes et les symboles principaux.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-paraboles",
+    "title": "Challenge 7 jours : Les paraboles de Jesus",
+    "description": "Comprendre les images et appels spirituels simples des paraboles.",
+    "category": "evangiles",
+    "level": "intermediaire",
+    "days": 7,
+    "progression": 0,
+    "summary": "Observer le message central de chaque parabole sans forcer l'interpretation.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-miracles",
+    "title": "Challenge 7 jours : Les miracles de Jesus",
+    "description": "Signes, guerisons et autorite de Jesus dans les evangiles.",
+    "category": "evangiles",
+    "level": "debutant",
+    "days": 7,
+    "progression": 0,
+    "summary": "Reperer les miracles et leur place dans le recit.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-femmes",
+    "title": "Challenge 7 jours : Les femmes importantes de la Bible",
+    "description": "Sara, Ruth, Esther, Marie, Priscille et d'autres figures majeures.",
+    "category": "personnages",
+    "level": "intermediaire",
+    "days": 7,
+    "progression": 0,
+    "summary": "Connaitre leurs histoires, leurs choix et leur contexte.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-rois",
+    "title": "Challenge 7 jours : Les rois d'Israel et de Juda",
+    "description": "Saul, David, Salomon et la periode des royaumes divises.",
+    "category": "livres_historiques",
+    "level": "avance",
+    "days": 7,
+    "progression": 0,
+    "summary": "Construire une chronologie claire des rois principaux.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  },
+  {
+    "id": "ch-empires",
+    "title": "Challenge 7 jours : Les empires dans la Bible",
+    "description": "Egypte, Assyrie, Babylone, Perse, Grece et Rome dans le contexte biblique.",
+    "category": "contexte_historique",
+    "level": "expert",
+    "days": 7,
+    "progression": 0,
+    "summary": "Distinguer les references bibliques et les apports historiques des Bibles d'etude.",
+    "isActive": true,
+    "createdAt": "2026-05-08T00:00:00.000Z"
+  }
+]

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#12345b">
+    <title>Quiz Bible</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#home" aria-label="Accueil Quiz Bible">
+        <span class="brand-mark">QB</span>
+        <span>Quiz Bible</span>
+      </a>
+      <nav class="nav" aria-label="Navigation principale">
+        <button data-view="home">Accueil</button>
+        <button data-view="play">Commencer</button>
+        <button data-view="challenges">Challenges</button>
+        <button data-view="leaderboard">Classement</button>
+        <button data-view="admin">Admin</button>
+      </nav>
+      <button class="theme-toggle" id="themeToggle" aria-label="Changer de theme">☾</button>
+    </header>
+
+    <main>
+      <section class="hero view active" id="homeView">
+        <div class="hero-copy">
+          <p class="eyebrow">Apprendre en jouant</p>
+          <h1>Quiz Bible</h1>
+          <p class="lead">Un jeu biblique moderne avec niveaux progressifs, explications, references et challenges d'etude.</p>
+          <div class="hero-actions">
+            <button class="primary" data-view="play">Commencer</button>
+            <button class="secondary" data-view="challenges">Challenges</button>
+            <button class="secondary" data-view="leaderboard">Classement</button>
+          </div>
+        </div>
+        <div class="hero-panel" aria-label="Apercu des modes">
+          <div class="scripture-card">
+            <span class="icon">✦</span>
+            <strong>10 questions</strong>
+            <span>QCM, vrai/faux, versets, personnages, contexte historique.</span>
+          </div>
+          <div class="stats-strip">
+            <span><b>4</b> niveaux</span>
+            <span><b>17</b> categories</span>
+            <span><b>+5</b> bonus vitesse</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="view shell" id="playView">
+        <div class="section-head">
+          <p class="eyebrow">Mode de jeu</p>
+          <h2>Choisis ton parcours</h2>
+        </div>
+        <form class="setup-grid" id="gameSetup">
+          <label>
+            Nom du joueur
+            <input name="playerName" maxlength="40" placeholder="Anonyme">
+          </label>
+          <label>
+            Categorie
+            <select name="category" id="categorySelect"></select>
+          </label>
+          <label>
+            Niveau
+            <select name="level" id="levelSelect"></select>
+          </label>
+          <label>
+            Questions
+            <select name="count">
+              <option>5</option>
+              <option selected>10</option>
+              <option>15</option>
+              <option>20</option>
+            </select>
+          </label>
+          <label>
+            Temps par question
+            <select name="timeLimit">
+              <option>15</option>
+              <option selected>30</option>
+              <option>45</option>
+              <option>60</option>
+            </select>
+          </label>
+          <button class="primary full" type="submit">Lancer la partie</button>
+        </form>
+
+        <div class="game-board hidden" id="gameBoard">
+          <div class="game-meta">
+            <span id="questionCounter">Question 1/10</span>
+            <span id="timer">30s</span>
+            <span id="score">0 pts</span>
+          </div>
+          <div class="progress"><span id="timerBar"></span></div>
+          <article class="question-card">
+            <p class="pill" id="questionType">QCM</p>
+            <h2 id="questionText"></h2>
+            <div class="answers" id="answers"></div>
+          </article>
+          <aside class="feedback hidden" id="feedback">
+            <h3 id="feedbackTitle"></h3>
+            <p id="feedbackText"></p>
+            <p class="reference" id="feedbackReference"></p>
+            <button class="primary" id="nextQuestion" type="button">Question suivante</button>
+          </aside>
+        </div>
+
+        <div class="results hidden" id="results"></div>
+      </section>
+
+      <section class="view shell" id="challengesView">
+        <div class="section-head">
+          <p class="eyebrow">Challenges d'etude</p>
+          <h2>Progression sur 7 jours</h2>
+        </div>
+        <div class="card-grid" id="challengeGrid"></div>
+      </section>
+
+      <section class="view shell" id="leaderboardView">
+        <div class="section-head">
+          <p class="eyebrow">Scores</p>
+          <h2>Classement</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Joueur</th>
+                <th>Score</th>
+                <th>Categorie</th>
+                <th>Niveau</th>
+                <th>Date</th>
+              </tr>
+            </thead>
+            <tbody id="leaderboardRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="view shell" id="adminView">
+        <div class="section-head">
+          <p class="eyebrow">Administration</p>
+          <h2>Questions, scores et challenges</h2>
+        </div>
+        <form class="admin-login" id="adminLogin">
+          <input name="username" placeholder="Utilisateur" autocomplete="username" required>
+          <input name="password" type="password" placeholder="Mot de passe" autocomplete="current-password" required>
+          <button class="primary" type="submit">Connexion</button>
+        </form>
+        <div class="admin-panel hidden" id="adminPanel">
+          <div class="admin-actions">
+            <button class="secondary" id="adminRefresh" type="button">Rafraichir</button>
+            <button class="secondary" id="adminGenerate" type="button">Generer 20 questions</button>
+            <button class="secondary" id="adminLogout" type="button">Deconnexion</button>
+          </div>
+          <div class="admin-layout">
+            <form class="editor" id="questionEditor">
+              <h3 id="questionEditorTitle">Ajouter une question</h3>
+              <input name="id" type="hidden">
+              <input name="question" placeholder="Question" required>
+              <input name="options" placeholder="Options separees par |" required>
+              <input name="correctAnswer" placeholder="Bonne reponse" required>
+              <textarea name="explanation" placeholder="Explication" required></textarea>
+              <input name="reference" placeholder="Reference biblique">
+              <select name="category" id="adminCategorySelect"></select>
+              <select name="level" id="adminLevelSelect"></select>
+              <select name="type" id="adminTypeSelect"></select>
+              <label class="check"><input name="isActive" type="checkbox" checked> Active</label>
+              <button class="primary" type="submit" id="questionSubmit">Ajouter</button>
+              <button class="secondary hidden" type="button" id="questionCancel">Annuler</button>
+            </form>
+            <div class="admin-list">
+              <h3>Questions existantes</h3>
+              <div id="adminQuestions"></div>
+            </div>
+          </div>
+          <div class="admin-layout">
+            <form class="editor" id="challengeEditor">
+              <h3 id="challengeEditorTitle">Ajouter un challenge</h3>
+              <input name="id" type="hidden">
+              <input name="title" placeholder="Titre" required>
+              <textarea name="description" placeholder="Description" required></textarea>
+              <input name="summary" placeholder="Resume d'apprentissage">
+              <select name="category" id="challengeCategorySelect"></select>
+              <select name="level" id="challengeLevelSelect"></select>
+              <input name="days" type="number" min="1" max="30" value="7">
+              <button class="primary" type="submit" id="challengeSubmit">Ajouter</button>
+              <button class="secondary hidden" type="button" id="challengeCancel">Annuler</button>
+            </form>
+            <div class="admin-list">
+              <h3>Challenges</h3>
+              <div id="adminChallenges"></div>
+              <h3>Parties jouees et scores</h3>
+              <div id="adminStats"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

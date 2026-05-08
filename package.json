@@ -1,0 +1,21 @@
+{
+  "name": "quiz-bible",
+  "version": "1.0.0",
+  "description": "Quiz biblique moderne avec challenges, scores, admin et generation Azure OpenAI optionnelle.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "node scripts/validate.js"
+  },
+  "keywords": [
+    "bible",
+    "quiz",
+    "education"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
