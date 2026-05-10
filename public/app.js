@@ -36,6 +36,7 @@ let operatorChallenges = [];
 let operatorTargetType = 'bank';
 let operatorTargetId = '';
 let isMobileMenuOpen = false;
+let pendingProtectedView = '';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -71,22 +72,16 @@ function bindNavigation() {
   $('#menuToggle')?.addEventListener('click', toggleMobileMenu);
   $('#mobileMenuClose')?.addEventListener('click', closeMobileMenu);
   $('#mobileMenuOverlay')?.addEventListener('click', closeMobileMenu);
-  $('#managementTrigger')?.addEventListener('click', toggleManagementMenu);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeMobileMenu();
-      setManagementMenuOpen(false);
     }
-  });
-  document.addEventListener('click', (event) => {
-    if (!event.target.closest?.('#managementMenu')) setManagementMenuOpen(false);
   });
   $$('[data-view]').forEach((trigger) => {
     trigger.addEventListener('click', (event) => {
       event.preventDefault();
       showView(trigger.dataset.view);
       closeMobileMenu();
-      setManagementMenuOpen(false);
       focusViewTarget(trigger.dataset.focusTarget);
     });
   });
@@ -123,17 +118,6 @@ function setMobileMenuOpen(open) {
   if (overlay) overlay.hidden = !isMobileMenuOpen;
 }
 
-function toggleManagementMenu(event) {
-  event?.stopPropagation();
-  const menu = $('#managementMenu');
-  setManagementMenuOpen(!menu?.classList.contains('open'));
-}
-
-function setManagementMenuOpen(open) {
-  $('#managementMenu')?.classList.toggle('open', Boolean(open));
-  $('#managementTrigger')?.setAttribute('aria-expanded', String(Boolean(open)));
-}
-
 function focusViewTarget(id) {
   if (!id) return;
   requestAnimationFrame(() => {
@@ -144,26 +128,11 @@ function focusViewTarget(id) {
 }
 
 async function syncNavigationRole() {
-  let user = null;
   try {
-    ({ user } = await api('/api/auth/me'));
+    await api('/api/auth/me');
   } catch (error) {
-    user = null;
+    // Navigation entries stay visible; access is enforced when a protected view opens.
   }
-  const legacyAdminOpen = !$('#adminPanel')?.classList.contains('hidden');
-  $$('[data-role-nav]').forEach((button) => {
-    const role = button.dataset.roleNav;
-    const visible = role === 'admin'
-      ? user?.role === 'admin' || legacyAdminOpen
-      : ['admin', 'operator'].includes(user?.role) || legacyAdminOpen;
-    button.hidden = !visible;
-  });
-  const hasManagementLinks = $$('[data-role-nav]').some((button) => !button.hidden);
-  const managementMenu = $('#managementMenu');
-  if (managementMenu) managementMenu.hidden = !hasManagementLinks;
-  $$('[data-auth-nav="login"]').forEach((button) => {
-    button.hidden = Boolean(user) || legacyAdminOpen;
-  });
 }
 
 function bindForms() {
@@ -790,13 +759,13 @@ async function loginUserForm(event) {
     });
     $('#loginMessage').textContent = '';
     await syncNavigationRole();
-    if (user?.role === 'admin') {
-      showView('admin');
-    } else if (user?.role === 'operator') {
-      showView('operator');
+    if (pendingProtectedView) {
+      const nextView = pendingProtectedView;
+      pendingProtectedView = '';
+      showView(nextView);
     } else {
-      showView('home');
-      alert('Acces non autorise');
+      showView(user?.role === 'admin' ? 'admin' : user?.role === 'operator' ? 'operator' : 'home');
+      if (!['admin', 'operator'].includes(user?.role)) alert('Acces non autorise');
     }
   } catch (error) {
     $('#loginMessage').textContent = error.message || 'Connexion impossible';
@@ -1109,7 +1078,7 @@ async function handleProtectedView(view) {
     } catch (error) {
       const { user } = await currentAuthUser();
       if (!user) {
-        redirectToLogin('Connexion requise pour acceder a l administration.');
+        redirectToLogin('Connexion requise pour acceder a l administration.', 'admin');
         return;
       }
       showAccessDenied('admin', new Error(user.role === 'admin' ? error.message : 'Acces non autorise'));
@@ -1119,7 +1088,7 @@ async function handleProtectedView(view) {
 
   const { user } = await currentAuthUser();
   if (!user) {
-    redirectToLogin('Connexion requise pour acceder a l espace operateur.');
+    redirectToLogin('Connexion requise pour acceder a l espace operateur.', 'operator');
     return;
   }
   if (!['admin', 'operator'].includes(user.role)) {
@@ -1142,7 +1111,8 @@ async function currentAuthUser() {
   }
 }
 
-function redirectToLogin(message) {
+function redirectToLogin(message, targetView = '') {
+  pendingProtectedView = targetView;
   showView('login');
   $('#loginMessage').textContent = message || '';
 }
