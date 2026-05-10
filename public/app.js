@@ -44,6 +44,7 @@ init();
 async function init() {
   bindNavigation();
   bindForms();
+  await syncNavigationRole();
   $('#themeToggle').addEventListener('click', toggleTheme);
   state.meta = await api('/api/meta');
   fillSelects();
@@ -65,12 +66,20 @@ function handleInitialHash() {
 }
 
 function bindNavigation() {
+  $('#menuToggle')?.addEventListener('click', toggleMobileMenu);
+  $('.brand')?.addEventListener('click', closeMobileMenu);
   $$('[data-view]').forEach((button) => {
-    button.addEventListener('click', () => showView(button.dataset.view));
+    button.addEventListener('click', () => {
+      showView(button.dataset.view);
+      closeMobileMenu();
+      focusViewTarget(button.dataset.focusTarget);
+    });
   });
 }
 
 function showView(view) {
+  setGameImmersive(false);
+  if (view !== 'competition') setCompetitionImmersive(false);
   $$('.view').forEach((section) => section.classList.remove('active'));
   $$('.nav button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   $(`#${view}View`)?.classList.add('active');
@@ -81,9 +90,46 @@ function showView(view) {
   if (view === 'operator') loadOperator().catch(() => {});
 }
 
+function toggleMobileMenu() {
+  const isOpen = document.body.classList.toggle('menu-open');
+  $('#menuToggle')?.setAttribute('aria-expanded', String(isOpen));
+}
+
+function closeMobileMenu() {
+  document.body.classList.remove('menu-open');
+  $('#menuToggle')?.setAttribute('aria-expanded', 'false');
+}
+
+function focusViewTarget(id) {
+  if (!id) return;
+  requestAnimationFrame(() => {
+    const target = document.getElementById(id);
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target?.querySelector('input, select, textarea, button')?.focus?.({ preventScroll: true });
+  });
+}
+
+async function syncNavigationRole() {
+  let user = null;
+  try {
+    ({ user } = await api('/api/auth/me'));
+  } catch (error) {
+    user = null;
+  }
+  $$('[data-role-nav]').forEach((button) => {
+    const role = button.dataset.roleNav;
+    const legacyAdminOpen = !$('#adminPanel')?.classList.contains('hidden');
+    const visible = role === 'admin'
+      ? user?.role === 'admin' || legacyAdminOpen
+      : ['admin', 'operator'].includes(user?.role) || legacyAdminOpen;
+    button.hidden = !visible;
+  });
+}
+
 function bindForms() {
   $('#gameSetup').addEventListener('submit', startGame);
   $('#nextQuestion').addEventListener('click', nextQuestion);
+  $('#quitGame').addEventListener('click', quitGame);
   $('#adminLogin').addEventListener('submit', adminLogin);
   $('#adminLogout').addEventListener('click', adminLogout);
   $('#adminRefresh').addEventListener('click', loadAdmin);
@@ -154,9 +200,23 @@ async function startGame(event) {
     }
   });
   state.questions = response.questions;
+  setGameImmersive(true);
+  window.scrollTo({ top: 0, left: 0 });
   $('#gameBoard').classList.remove('hidden');
   $('#results').classList.add('hidden');
   renderQuestion();
+}
+
+function quitGame() {
+  if (!confirm('Voulez-vous vraiment quitter la partie ?')) return;
+  clearInterval(state.timerId);
+  state.questions = [];
+  state.currentIndex = 0;
+  state.score = 0;
+  $('#gameBoard').classList.add('hidden');
+  $('#results').classList.add('hidden');
+  setGameImmersive(false);
+  showView('play');
 }
 
 function renderQuestion() {
@@ -220,6 +280,7 @@ function nextQuestion() {
 }
 
 async function finishGame() {
+  setGameImmersive(false);
   const response = await api('/api/submit-game', {
     method: 'POST',
     body: {
@@ -649,6 +710,7 @@ async function adminLogin(event) {
     });
     $('#adminLogin').classList.add('hidden');
     $('#adminPanel').classList.remove('hidden');
+    await syncNavigationRole();
     await loadAdmin();
   } catch (error) {
     alert(error.message);
@@ -659,6 +721,7 @@ async function adminLogout() {
   await api('/api/admin/logout', { method: 'POST', body: {} });
   $('#adminPanel').classList.add('hidden');
   $('#adminLogin').classList.remove('hidden');
+  await syncNavigationRole();
 }
 
 async function operatorLogin(event) {
@@ -671,6 +734,7 @@ async function operatorLogin(event) {
     });
     $('#operatorLogin').classList.add('hidden');
     $('#operatorPanel').classList.remove('hidden');
+    await syncNavigationRole();
     await loadOperator();
   } catch (error) {
     alert(error.message);
@@ -681,6 +745,7 @@ async function operatorLogout() {
   await api('/api/auth/logout', { method: 'POST', body: {} });
   $('#operatorPanel').classList.add('hidden');
   $('#operatorLogin').classList.remove('hidden');
+  await syncNavigationRole();
 }
 
 async function loadOperator() {
@@ -1416,8 +1481,17 @@ async function loadCompetitionState() {
 }
 
 function setCompetitionImmersive(active) {
+  const wasActive = document.body.classList.contains('competition-immersive');
   if (active && !$('#competitionView')?.classList.contains('active')) showView('competition');
   document.body.classList.toggle('competition-immersive', active);
+  if (active && !wasActive) window.scrollTo({ top: 0, left: 0 });
+}
+
+function setGameImmersive(active) {
+  const wasActive = document.body.classList.contains('game-immersive');
+  document.body.classList.toggle('game-immersive', active);
+  if (active && !$('#playView')?.classList.contains('active')) showView('play');
+  if (active && !wasActive) window.scrollTo({ top: 0, left: 0 });
 }
 
 function syncCompetitionCountdown(data) {

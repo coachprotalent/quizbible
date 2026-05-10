@@ -13,14 +13,21 @@
         <span class="brand-mark">QB</span>
         <span>Quiz Bible</span>
       </a>
-      <nav class="nav" aria-label="Navigation principale">
+      <button class="burger" id="menuToggle" type="button" aria-label="Ouvrir le menu" aria-controls="mainNav" aria-expanded="false">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <nav class="nav" id="mainNav" aria-label="Navigation principale">
         <button data-view="home">Accueil</button>
-        <button data-view="play">Commencer</button>
-        <button data-view="competition">Competition</button>
+        <button data-view="play">Jouer</button>
+        <button data-view="competition" data-focus-target="roomCreateForm">Creer un salon</button>
+        <button data-view="competition" data-focus-target="roomJoinForm">Rejoindre un salon</button>
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
-        <button data-view="operator">Operateur</button>
-        <button data-view="admin">Admin</button>
+        <button data-view="operator">Connexion / Profil</button>
+        <button data-view="admin" data-role-nav="admin">Admin</button>
+        <button data-view="operator" data-role-nav="operator">Operateur</button>
       </nav>
       <button class="theme-toggle" id="themeToggle" aria-label="Changer de theme">☾</button>
     </header>
@@ -207,6 +214,7 @@
             <span id="questionCounter">Question 1/10</span>
             <span id="timer">30s</span>
             <span id="score">0 pts</span>
+            <button class="secondary quit-game" id="quitGame" type="button">Quitter</button>
           </div>
           <div class="progress"><span id="timerBar"></span></div>
           <article class="question-card">
