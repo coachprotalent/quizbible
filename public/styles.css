@@ -54,9 +54,11 @@ button {
 }
 
 .topbar {
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: 20;
+  left: 0;
+  right: 0;
+  z-index: 10004;
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -116,8 +118,15 @@ body.dark .topbar {
   background: rgba(18, 52, 91, 0.1);
 }
 
+.mobile-home,
+.mobile-menu-overlay,
+.mobile-menu-head {
+  display: none;
+}
+
 main {
   width: 100%;
+  padding-top: 4rem;
 }
 
 .view {
@@ -583,7 +592,6 @@ body.competition-immersive {
   background: var(--bg);
 }
 
-body.competition-immersive .topbar,
 body.competition-immersive #competitionView > .section-head,
 body.competition-immersive #roomCreateForm,
 body.competition-immersive #roomJoinForm,
@@ -893,6 +901,9 @@ main {
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
+  position: relative;
+  z-index: 10003;
+  pointer-events: auto;
 }
 
 .burger span {
@@ -907,20 +918,76 @@ main {
 .nav {
   position: fixed;
   inset: 4rem 0 0;
-  z-index: 30;
+  z-index: 10002;
   display: none;
   align-content: start;
   justify-content: stretch;
   gap: 0.55rem;
   padding: 1rem;
+  max-height: calc(100dvh - 4rem);
   overflow-y: auto;
   background: color-mix(in srgb, var(--surface) 96%, transparent);
   border-top: 1px solid var(--line);
   backdrop-filter: blur(18px);
+  pointer-events: auto;
 }
 
 body.menu-open .nav {
   display: grid;
+}
+
+.mobile-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: block;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.mobile-menu-overlay[hidden] {
+  display: none;
+}
+
+.mobile-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.mobile-menu-head strong {
+  font-size: 1rem;
+}
+
+.mobile-menu-close {
+  display: inline-grid;
+  width: 2.5rem;
+  height: 2.5rem;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 1.55rem;
+  line-height: 1;
+}
+
+.mobile-home {
+  display: none;
+  min-height: 2.4rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 0.75rem;
+  font-weight: 800;
+}
+
+body.internal-view .mobile-home {
+  display: inline-flex;
+  align-items: center;
 }
 
 .nav button,
@@ -1123,7 +1190,6 @@ body.game-immersive {
   background: var(--bg);
 }
 
-body.game-immersive .topbar,
 body.game-immersive #playView > .section-head,
 body.game-immersive #gameSetup {
   display: none !important;
@@ -1131,13 +1197,13 @@ body.game-immersive #gameSetup {
 
 body.game-immersive #playView {
   width: 100%;
-  min-height: 100dvh;
+  min-height: calc(100dvh - 4rem);
   padding: 0.75rem 0.75rem 5rem;
 }
 
 body.game-immersive #gameBoard {
   width: min(920px, 100%);
-  min-height: calc(100dvh - 1.5rem);
+  min-height: calc(100dvh - 5.5rem);
   margin: 0 auto;
   align-content: start;
 }
@@ -1223,6 +1289,12 @@ body.competition-immersive #competitionView {
     display: none;
   }
 
+  .mobile-home,
+  .mobile-menu-overlay,
+  .mobile-menu-head {
+    display: none !important;
+  }
+
   .theme-toggle {
     order: 0;
     margin-left: 0;
@@ -1242,6 +1314,7 @@ body.competition-immersive #competitionView {
     background: transparent;
     border-top: 0;
     backdrop-filter: none;
+    max-height: none;
   }
 
   .nav button {

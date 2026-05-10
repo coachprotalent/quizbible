@@ -35,6 +35,7 @@ let operatorBanks = [];
 let operatorChallenges = [];
 let operatorTargetType = 'bank';
 let operatorTargetId = '';
+let isMobileMenuOpen = false;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -67,12 +68,17 @@ function handleInitialHash() {
 
 function bindNavigation() {
   $('#menuToggle')?.addEventListener('click', toggleMobileMenu);
-  $('.brand')?.addEventListener('click', closeMobileMenu);
-  $$('[data-view]').forEach((button) => {
-    button.addEventListener('click', () => {
-      showView(button.dataset.view);
+  $('#mobileMenuClose')?.addEventListener('click', closeMobileMenu);
+  $('#mobileMenuOverlay')?.addEventListener('click', closeMobileMenu);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeMobileMenu();
+  });
+  $$('[data-view]').forEach((trigger) => {
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      showView(trigger.dataset.view);
       closeMobileMenu();
-      focusViewTarget(button.dataset.focusTarget);
+      focusViewTarget(trigger.dataset.focusTarget);
     });
   });
 }
@@ -83,6 +89,7 @@ function showView(view) {
   $$('.view').forEach((section) => section.classList.remove('active'));
   $$('.nav button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   $(`#${view}View`)?.classList.add('active');
+  document.body.classList.toggle('internal-view', view !== 'home');
   location.hash = view;
   if (view === 'leaderboard') loadLeaderboard();
   if (view === 'challenges') loadChallenges();
@@ -91,13 +98,20 @@ function showView(view) {
 }
 
 function toggleMobileMenu() {
-  const isOpen = document.body.classList.toggle('menu-open');
-  $('#menuToggle')?.setAttribute('aria-expanded', String(isOpen));
+  setMobileMenuOpen(!isMobileMenuOpen);
 }
 
 function closeMobileMenu() {
-  document.body.classList.remove('menu-open');
-  $('#menuToggle')?.setAttribute('aria-expanded', 'false');
+  setMobileMenuOpen(false);
+}
+
+function setMobileMenuOpen(open) {
+  isMobileMenuOpen = Boolean(open);
+  document.body.classList.toggle('menu-open', isMobileMenuOpen);
+  $('#menuToggle')?.setAttribute('aria-expanded', String(isMobileMenuOpen));
+  $('#menuToggle')?.setAttribute('aria-label', isMobileMenuOpen ? 'Fermer le menu' : 'Ouvrir le menu');
+  const overlay = $('#mobileMenuOverlay');
+  if (overlay) overlay.hidden = !isMobileMenuOpen;
 }
 
 function focusViewTarget(id) {
