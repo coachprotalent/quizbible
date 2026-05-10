@@ -32,8 +32,13 @@
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
         <button data-view="operator">Connexion / Profil</button>
-        <button data-view="admin" data-role-nav="admin">Admin</button>
-        <button data-view="operator" data-role-nav="operator">Operateur</button>
+        <div class="management-menu" id="managementMenu" hidden>
+          <button class="management-trigger" id="managementTrigger" type="button" aria-expanded="false">Espace gestion</button>
+          <div class="management-dropdown" id="managementDropdown">
+            <button data-view="admin" data-role-nav="admin">Administrateur</button>
+            <button data-view="operator" data-role-nav="operator">Operateur</button>
+          </div>
+        </div>
       </nav>
       <button class="theme-toggle" id="themeToggle" aria-label="Changer de theme">☾</button>
     </header>
@@ -286,6 +291,7 @@
           <input name="password" type="password" placeholder="Mot de passe" autocomplete="current-password" required>
           <button class="primary" type="submit">Connexion</button>
         </form>
+        <p class="form-message" id="adminAccessMessage" role="status"></p>
         <div class="admin-panel hidden" id="adminPanel">
           <div class="hidden" id="adminQuestions"></div>
           <select class="hidden" id="bankQuestionBankSelect"></select>
@@ -374,6 +380,7 @@
           <input name="password" type="password" placeholder="Mot de passe" autocomplete="current-password" required>
           <button class="primary" type="submit">Connexion</button>
         </form>
+        <p class="form-message" id="operatorAccessMessage" role="status"></p>
         <div class="admin-panel hidden" id="operatorPanel">
           <div class="admin-actions">
             <button class="secondary" id="operatorRefresh" type="button">Rafraichir</button>

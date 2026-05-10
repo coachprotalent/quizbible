@@ -70,14 +70,22 @@ function bindNavigation() {
   $('#menuToggle')?.addEventListener('click', toggleMobileMenu);
   $('#mobileMenuClose')?.addEventListener('click', closeMobileMenu);
   $('#mobileMenuOverlay')?.addEventListener('click', closeMobileMenu);
+  $('#managementTrigger')?.addEventListener('click', toggleManagementMenu);
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeMobileMenu();
+    if (event.key === 'Escape') {
+      closeMobileMenu();
+      setManagementMenuOpen(false);
+    }
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest?.('#managementMenu')) setManagementMenuOpen(false);
   });
   $$('[data-view]').forEach((trigger) => {
     trigger.addEventListener('click', (event) => {
       event.preventDefault();
       showView(trigger.dataset.view);
       closeMobileMenu();
+      setManagementMenuOpen(false);
       focusViewTarget(trigger.dataset.focusTarget);
     });
   });
@@ -94,7 +102,8 @@ function showView(view) {
   if (view === 'leaderboard') loadLeaderboard();
   if (view === 'challenges') loadChallenges();
   if (view === 'competition') loadRooms();
-  if (view === 'operator') loadOperator().catch(() => {});
+  if (view === 'admin') loadAdmin().catch((error) => showAccessDenied('admin', error));
+  if (view === 'operator') loadOperator().catch((error) => showAccessDenied('operator', error));
 }
 
 function toggleMobileMenu() {
@@ -114,6 +123,17 @@ function setMobileMenuOpen(open) {
   if (overlay) overlay.hidden = !isMobileMenuOpen;
 }
 
+function toggleManagementMenu(event) {
+  event?.stopPropagation();
+  const menu = $('#managementMenu');
+  setManagementMenuOpen(!menu?.classList.contains('open'));
+}
+
+function setManagementMenuOpen(open) {
+  $('#managementMenu')?.classList.toggle('open', Boolean(open));
+  $('#managementTrigger')?.setAttribute('aria-expanded', String(Boolean(open)));
+}
+
 function focusViewTarget(id) {
   if (!id) return;
   requestAnimationFrame(() => {
@@ -130,14 +150,17 @@ async function syncNavigationRole() {
   } catch (error) {
     user = null;
   }
+  const legacyAdminOpen = !$('#adminPanel')?.classList.contains('hidden');
   $$('[data-role-nav]').forEach((button) => {
     const role = button.dataset.roleNav;
-    const legacyAdminOpen = !$('#adminPanel')?.classList.contains('hidden');
     const visible = role === 'admin'
       ? user?.role === 'admin' || legacyAdminOpen
       : ['admin', 'operator'].includes(user?.role) || legacyAdminOpen;
     button.hidden = !visible;
   });
+  const hasManagementLinks = $$('[data-role-nav]').some((button) => !button.hidden);
+  const managementMenu = $('#managementMenu');
+  if (managementMenu) managementMenu.hidden = !hasManagementLinks;
 }
 
 function bindForms() {
@@ -745,6 +768,7 @@ async function adminLogin(event) {
     });
     $('#adminLogin').classList.add('hidden');
     $('#adminPanel').classList.remove('hidden');
+    setAccessMessage('admin', '');
     await syncNavigationRole();
     await loadAdmin();
   } catch (error) {
@@ -756,6 +780,7 @@ async function adminLogout() {
   await api('/api/admin/logout', { method: 'POST', body: {} });
   $('#adminPanel').classList.add('hidden');
   $('#adminLogin').classList.remove('hidden');
+  setAccessMessage('admin', '');
   await syncNavigationRole();
 }
 
@@ -769,6 +794,7 @@ async function operatorLogin(event) {
     });
     $('#operatorLogin').classList.add('hidden');
     $('#operatorPanel').classList.remove('hidden');
+    setAccessMessage('operator', '');
     await syncNavigationRole();
     await loadOperator();
   } catch (error) {
@@ -780,6 +806,7 @@ async function operatorLogout() {
   await api('/api/auth/logout', { method: 'POST', body: {} });
   $('#operatorPanel').classList.add('hidden');
   $('#operatorLogin').classList.remove('hidden');
+  setAccessMessage('operator', '');
   await syncNavigationRole();
 }
 
@@ -792,6 +819,7 @@ async function loadOperator() {
   operatorChallenges = challengesData.challenges || [];
   $('#operatorLogin').classList.add('hidden');
   $('#operatorPanel').classList.remove('hidden');
+  setAccessMessage('operator', '');
   $('#operatorBanks').innerHTML = operatorBanks.map((bank) => `
     <article class="admin-item">
       <strong>${escapeHtml(bank.title)}</strong>
@@ -950,6 +978,9 @@ async function operatorDeleteQuestion(id) {
 async function loadAdmin() {
   const data = await api('/api/admin/dashboard');
   questionBanks = data.questionBanks || questionBanks;
+  $('#adminLogin').classList.add('hidden');
+  $('#adminPanel').classList.remove('hidden');
+  setAccessMessage('admin', '');
   $('#adminQuestions').innerHTML = data.questions.map((question) => `
     <article class="admin-item">
       <strong>${escapeHtml(question.question)}</strong>
@@ -1040,6 +1071,18 @@ async function loadAdmin() {
   $$('[data-bank-toggle]').forEach((button) => button.addEventListener('click', () => adminToggleBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankToggle))));
   $$('[data-bank-assign]').forEach((button) => button.addEventListener('click', () => adminAssignBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankAssign))));
   $$('[data-bank-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteBank(button.dataset.bankDelete)));
+}
+
+function showAccessDenied(scope, error) {
+  const isAdminScope = scope === 'admin';
+  $(`#${scope}Panel`)?.classList.add('hidden');
+  $(`#${scope}Login`)?.classList.remove('hidden');
+  setAccessMessage(scope, error?.message || (isAdminScope ? 'Acces non autorise. Connexion administrateur requise.' : 'Acces non autorise. Connexion operateur requise.'));
+}
+
+function setAccessMessage(scope, message) {
+  const target = $(`#${scope}AccessMessage`);
+  if (target) target.textContent = message || '';
 }
 
 async function addQuestion(event) {
