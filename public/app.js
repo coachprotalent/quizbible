@@ -152,12 +152,17 @@ function bindForms() {
   $('#advancedToggle').addEventListener('click', () => $('#advancedOptions').classList.toggle('hidden'));
   $('#roomQuestionSource').addEventListener('change', updateQuestionBankVisibility);
   $('#roomIsScheduled').addEventListener('change', updateScheduleVisibility);
+  ['#levelSelect', '#roomLevelSelect', '#challengeLevelSelect', '#bankLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel']
+    .forEach((selector) => $(selector)?.addEventListener('change', updateScholarNotices));
   $$('.stepper button').forEach((button) => button.addEventListener('click', stepNumberInput));
 }
 
 function fillSelects() {
   const categoryOptions = state.meta.categories.map((category) => `<option value="${escapeHtml(category.id)}">${escapeHtml(category.label)}</option>`).join('');
-  const levelOptions = state.meta.levels.map((level) => `<option value="${escapeHtml(level.id)}">${escapeHtml(level.label)}</option>`).join('');
+  const levelOptions = state.meta.levels.map((level) => {
+    const label = level.id === 'scholar' ? 'Scholar - etude avancee' : level.label;
+    return `<option value="${escapeHtml(level.id)}">${escapeHtml(label)}</option>`;
+  }).join('');
   const typeOptions = state.meta.questionTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
   ['#categorySelect', '#challengeCategorySelect', '#roomCategorySelect', '#operatorThemeCategory'].forEach((selector) => $(selector).innerHTML = categoryOptions);
   ['#levelSelect', '#challengeLevelSelect', '#roomLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'].forEach((selector) => $(selector).innerHTML = levelOptions);
@@ -169,6 +174,18 @@ function fillSelects() {
   $('#roomQuestionTypes').innerHTML = typeOptions;
   $('#roomCategorySelect').value = 'random';
   $('#roomLevelSelect').value = 'intermediaire';
+  updateScholarNotices();
+}
+
+function updateScholarNotices() {
+  const scholarSelects = ['#levelSelect', '#roomLevelSelect', '#challengeLevelSelect', '#bankLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'];
+  scholarSelects.forEach((selector) => {
+    const select = $(selector);
+    if (!select) return;
+    select.classList.toggle('scholar-select', select.value === 'scholar');
+  });
+  $('#scholarNotice')?.classList.toggle('hidden', $('#levelSelect')?.value !== 'scholar');
+  $('#roomScholarNotice')?.classList.toggle('hidden', $('#roomLevelSelect')?.value !== 'scholar');
 }
 
 function stepNumberInput(event) {
@@ -265,6 +282,7 @@ async function answerQuestion(answer) {
   });
   $('#feedbackTitle').textContent = review.isCorrect ? 'Bonne reponse' : 'A retenir';
   $('#feedbackText').textContent = `${review.explanation} Bonne reponse : ${review.correctAnswer}.`;
+  if (review.historicalNote) $('#feedbackText').textContent += ` Note historique : ${review.historicalNote}`;
   $('#feedbackReference').textContent = review.reference ? `Reference : ${review.reference}` : '';
   $('#feedback').classList.remove('hidden');
   $('#nextQuestion').textContent = state.currentIndex + 1 >= state.questions.length ? 'Voir le resultat' : 'Question suivante';
@@ -594,6 +612,9 @@ async function submitCompetitionAnswer(selectedAnswer) {
   $('#competitionFeedbackText').textContent = competition.room.explanationsEnabled === false
     ? `Bonne reponse : ${result.correctAnswer}.`
     : `${result.explanation} Bonne reponse : ${result.correctAnswer}.`;
+  if (competition.room.explanationsEnabled !== false && result.historicalNote) {
+    $('#competitionFeedbackText').textContent += ` Note historique : ${result.historicalNote}`;
+  }
   $('#competitionReference').textContent = result.reference ? `Reference : ${result.reference}` : '';
   $('#competitionFeedback').classList.remove('hidden');
   $('#competitionNext').textContent = competition.index + 1 >= competition.questions.length ? 'Resultat du tour' : 'Question suivante';
@@ -1364,6 +1385,7 @@ function renderPhase(data) {
     $('#competitionFeedbackTitle').textContent = `Bonne reponse : ${question.correctAnswer}`;
     $('#competitionFeedbackText').innerHTML = `
       <span>${escapeHtml(question.explanation || 'Explication indisponible.')}</span>
+      ${question.historicalNote ? `<span>Note historique : ${escapeHtml(question.historicalNote)}</span>` : ''}
       <strong>Points gagnes : ${currentPoints}</strong>
       <span>Prochaine question dans ${data.countdownSeconds || 0}...</span>
       ${leaderboard}

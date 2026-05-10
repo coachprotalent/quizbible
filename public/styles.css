@@ -458,6 +458,46 @@ textarea {
   text-transform: uppercase;
 }
 
+.scholar-select {
+  border-color: #8f5cff;
+  color: #f7e7a6;
+  background:
+    linear-gradient(135deg, #20103d, #4b247a 52%, #9a6a21);
+  font-weight: 800;
+  box-shadow: 0 0 0 3px rgba(143, 92, 255, 0.16), 0 12px 28px rgba(45, 24, 85, 0.18);
+}
+
+.scholar-notice {
+  display: grid;
+  gap: 0.35rem;
+  grid-column: 1 / -1;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(226, 184, 92, 0.7);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(34, 16, 65, 0.96), rgba(76, 34, 126, 0.94) 58%, rgba(139, 93, 28, 0.92));
+  color: #fff8dc;
+  box-shadow: 0 18px 46px rgba(45, 24, 85, 0.2);
+}
+
+.scholar-notice strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: #f6d77a;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.scholar-notice strong::before {
+  content: "✦";
+}
+
+.scholar-notice span {
+  color: #f5edd9;
+  line-height: 1.45;
+}
+
 .answers {
   display: grid;
   gap: 0.75rem;

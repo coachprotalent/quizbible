@@ -40,8 +40,41 @@ const levels = [
   ['debutant', 'Debutant'],
   ['intermediaire', 'Intermediaire'],
   ['avance', 'Avance'],
-  ['expert', 'Expert']
+  ['expert', 'Expert'],
+  ['scholar', 'Scholar']
 ].map(([id, label]) => ({ id, label }));
+
+const aiAntiRepetitionInstruction = 'Ne reutilise pas des questions classiques ou deja generees recemment. Evite les formulations generiques repetitives. Genere des questions variees, originales, pedagogiques et non redondantes.';
+const scholarInstruction = 'Tu generes des questions bibliques avancees de niveau Scholar. Utilise le contexte historique, culturel, geopolitique et linguistique des evenements bibliques. Fais intervenir les empires antiques, les pratiques juives, la chronologie des prophetes, le contexte greco-romain et les elements couramment presents dans les Bibles d etude. Distingue clairement les faits bibliques directs du contexte historique associe. Evite les debats doctrinaux.';
+const scholarTopics = [
+  'contexte historique',
+  'chronologie avancee',
+  'geopolitique biblique',
+  'empires antiques',
+  'culture juive antique',
+  'grec biblique simple',
+  'symboles prophetiques',
+  'paralleles entre prophetes',
+  'references intertestamentaires',
+  'details de Bibles d etude',
+  'liens historiques entre personnages',
+  'pratiques du Proche-Orient antique',
+  'typologie biblique',
+  'interpretation contextuelle simple',
+  'contexte des expressions bibliques'
+];
+const rotationTopics = [
+  'propheties',
+  'chronologie',
+  'contexte historique',
+  'personnages',
+  'symboles',
+  'geographie',
+  'culture antique',
+  'pratiques juives',
+  'empires et royaumes',
+  'langage symbolique'
+];
 
 const questionTypes = [
   'qcm',
@@ -1018,6 +1051,7 @@ async function createQuestionsForRound(room, round) {
     order: index + 1
   }));
   writeJson('roundQuestions.json', roundQuestions.concat(saved));
+  recordGeneratedQuestions(saved, generated.validationStatus === 'local_selected' || generated.validationStatus === 'fallback_local' ? 'local' : 'AI');
   setRoundValidation(round.id, generated.validationStatus || 'validated');
   return saved;
 }
@@ -1052,7 +1086,7 @@ async function generateRoundQuestions(input) {
       continue;
     }
     const validation = await validateQuestionsWithAI(generated, input);
-    const validQuestions = generated.filter((question, index) => validation.results[index]?.valid && !isRecentDuplicate(question, input.recentQuestions || []));
+    const validQuestions = generated.filter((question, index) => validation.results[index]?.valid && !isDuplicateQuestion(question, input.recentQuestions || []));
     if (validQuestions.length >= count) {
       return { questions: validQuestions.slice(0, count), validationStatus: 'validated', validation };
     }
@@ -1089,17 +1123,30 @@ async function generateCompetitionQuestions(input, count) {
   const payload = await callAzureJson([
     {
       role: 'system',
-      content: 'Tu es un generateur expert de quiz biblique pour une competition. Genere des questions adaptees a la categorie, au niveau de difficulte et au type de challenge. Chaque question doit avoir une seule bonne reponse, quatre options plausibles, une explication courte et une reference biblique quand possible. Evite les debats doctrinaux. Retourne uniquement du JSON valide.'
+      content: [
+        'Tu es un generateur expert de quiz biblique pour une competition. Genere des questions adaptees a la categorie, au niveau de difficulte et au type de challenge. Chaque question doit avoir une seule bonne reponse, quatre options plausibles, une explication courte et une reference biblique quand possible. Evite les debats doctrinaux. Retourne uniquement du JSON valide.',
+        aiAntiRepetitionInstruction,
+        isScholarLevel(input.difficulty || input.level) ? scholarInstruction : ''
+      ].filter(Boolean).join(' ')
     },
     {
       role: 'user',
       content: JSON.stringify({
         category: input.category,
         difficulty: input.difficulty || input.level,
+        difficultyGuidance: difficultyGuidance(input.difficulty || input.level),
         challengeType: input.challengeType || 'competition',
         count,
         participantLevel: input.participantLevel || null,
         recentQuestions: input.recentQuestions || [],
+        recentlyGeneratedQuestions: recentGeneratedQuestionTexts(input.category, input.difficulty || input.level, 80),
+        avoidDuplicateRules: [
+          'rejeter les textes quasi identiques',
+          'eviter meme reponse et meme structure',
+          'eviter une variation trop faible d une question recente',
+          'eviter trop de questions sur le meme personnage ou le meme livre'
+        ],
+        rotationTopics,
         output: {
           questions: [{
             question: 'string',
@@ -1108,6 +1155,7 @@ async function generateCompetitionQuestions(input, count) {
             correctAnswer: 'string',
             explanation: 'string',
             reference: 'string',
+            historicalNote: 'string optionnel, separe du texte biblique direct',
             level: input.difficulty || input.level,
             category: input.category,
             justification: 'string'
@@ -1126,7 +1174,7 @@ async function generateCompetitionQuestions(input, count) {
 
 async function validateQuestionsWithAI(questions, input = {}) {
   const localResults = questions.map((question) => {
-    const valid = validateQuestion(sanitizeQuestion(question)) && !isRecentDuplicate(question, input.recentQuestions || []);
+    const valid = validateQuestion(sanitizeQuestion(question)) && !isDuplicateQuestion(question, input.recentQuestions || []);
     return {
       valid,
       reason: valid ? 'Validation locale OK' : 'Question invalide, ambigue ou doublon recent',
@@ -1140,9 +1188,9 @@ async function validateQuestionsWithAI(questions, input = {}) {
     const payload = await callAzureJson([
       {
         role: 'system',
-        content: 'Tu es un validateur de qualite pour un quiz biblique. Analyse chaque question et verifie qu elle est claire, non ambigue, bibliquement coherente, adaptee au niveau demande, avec une seule bonne reponse. Retourne pour chaque question : valid true/false, reason, correctedQuestion si necessaire.'
+        content: 'Tu es un validateur de qualite pour un quiz biblique. Analyse chaque question et verifie qu elle est claire, non ambigue, bibliquement coherente, adaptee au niveau demande, avec une seule bonne reponse. Rejette les doublons, les questions quasi identiques, les formulations trop generiques et les speculations presentees comme certitudes. Pour Scholar, verifie que le texte biblique direct est distingue du contexte historique ou culturel. Retourne pour chaque question : valid true/false, reason, correctedQuestion si necessaire.'
       },
-      { role: 'user', content: JSON.stringify({ questions, difficulty: input.difficulty || input.level, category: input.category }) }
+      { role: 'user', content: JSON.stringify({ questions, difficulty: input.difficulty || input.level, category: input.category, recentlyGeneratedQuestions: recentGeneratedQuestionTexts(input.category, input.difficulty || input.level, 80) }) }
     ]);
     const results = Array.isArray(payload.results) ? payload.results : Array.isArray(payload.questions) ? payload.questions : [];
     return { results: questions.map((_, index) => ({
@@ -1181,6 +1229,7 @@ function sanitizeRoundQuestion(body) {
     options: question.options,
     correctAnswer: question.correctAnswer,
     explanation: question.explanation,
+    historicalNote: question.historicalNote,
     reference: question.reference,
     category: question.category,
     difficulty: sanitizeString(body.difficulty || question.level).slice(0, 80),
@@ -1293,6 +1342,7 @@ function buildRoomState(roomInput, participantId) {
     type: currentQuestion.type,
     options: currentQuestion.options,
     explanation: revealQuestion && room.explanationsEnabled !== false ? currentQuestion.explanation : undefined,
+    historicalNote: revealQuestion && room.explanationsEnabled !== false ? currentQuestion.historicalNote : undefined,
     reference: revealQuestion ? currentQuestion.reference : undefined,
     correctAnswer: revealQuestion ? currentQuestion.correctAnswer : undefined
   } : null;
@@ -1409,8 +1459,122 @@ function recentRoomQuestionTexts(roomId) {
 }
 
 function isRecentDuplicate(question, recentQuestions) {
-  const text = normalize(question.question || '');
-  return recentQuestions.some((recent) => normalize(recent) === text);
+  return isDuplicateQuestion(question, recentQuestions);
+}
+
+function isDuplicateQuestion(question, recentQuestions = []) {
+  const history = readJson('generatedQuestionsHistory.json');
+  const candidates = [
+    ...recentQuestions.map((recent) => typeof recent === 'string' ? { rawQuestion: recent } : recent),
+    ...history.slice(-300)
+  ];
+  return candidates.some((candidate) => questionsAreSimilar(question, candidate));
+}
+
+function questionsAreSimilar(question, candidate) {
+  const left = normalizedQuestionText(question.question || question.rawQuestion || '');
+  const right = normalizedQuestionText(candidate.question || candidate.rawQuestion || candidate.normalizedQuestion || '');
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (stringSimilarity(left, right) >= 0.9) return true;
+
+  const leftAnswer = normalizeAnswer(question.correctAnswer);
+  const rightAnswer = normalizeAnswer(candidate.correctAnswer);
+  if (leftAnswer && rightAnswer && leftAnswer === rightAnswer) {
+    if (questionStructure(left) === questionStructure(right)) return true;
+    if (stringSimilarity(left, right) >= 0.72) return true;
+  }
+  return false;
+}
+
+function recordGeneratedQuestions(questions, source = 'AI') {
+  if (!Array.isArray(questions) || !questions.length) return;
+  const history = readJson('generatedQuestionsHistory.json');
+  const now = new Date().toISOString();
+  for (const question of questions) {
+    const normalizedQuestion = normalizedQuestionText(question.question);
+    if (!normalizedQuestion) continue;
+    if (history.some((item) => item.normalizedQuestion === normalizedQuestion)) continue;
+    history.push({
+      id: `gqh-${crypto.randomUUID()}`,
+      normalizedQuestion,
+      rawQuestion: sanitizeString(question.question).slice(0, 500),
+      correctAnswer: sanitizeString(question.correctAnswer || '').slice(0, 180),
+      category: sanitizeString(question.category || '').slice(0, 80),
+      difficulty: sanitizeString(question.difficulty || question.level || '').slice(0, 80),
+      generatedAt: now,
+      source,
+      hash: crypto.createHash('sha256').update(normalizedQuestion).digest('hex')
+    });
+  }
+  writeJson('generatedQuestionsHistory.json', history.slice(-2000));
+}
+
+function recentGeneratedQuestionTexts(category, difficulty, limit = 60) {
+  const normalizedCategory = normalize(category || '');
+  const normalizedDifficulty = normalize(difficulty || '');
+  return readJson('generatedQuestionsHistory.json')
+    .filter((item) => {
+      const sameCategory = !normalizedCategory || normalize(item.category) === normalizedCategory;
+      const sameDifficulty = !normalizedDifficulty || normalize(item.difficulty) === normalizedDifficulty;
+      return sameCategory || sameDifficulty;
+    })
+    .slice(-limit)
+    .map((item) => item.rawQuestion);
+}
+
+function normalizedQuestionText(value) {
+  return normalize(value)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeAnswer(value) {
+  return normalizedQuestionText(value || '');
+}
+
+function questionStructure(value) {
+  return value
+    .replace(/\b(qui|que|quoi|quel|quelle|quels|quelles|quand|ou|comment|pourquoi|dans|selon|apres|avant)\b/g, '?')
+    .replace(/\b[a-z0-9]{4,}\b/g, '*')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stringSimilarity(left, right) {
+  const leftTokens = new Set(left.split(' ').filter((token) => token.length > 2));
+  const rightTokens = new Set(right.split(' ').filter((token) => token.length > 2));
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return intersection / union;
+}
+
+function isScholarLevel(level) {
+  return normalize(level) === 'scholar';
+}
+
+function difficultyGuidance(level) {
+  if (!isScholarLevel(level)) return 'Adapter la profondeur au niveau demande sans ambiguites.';
+  return {
+    label: 'Scholar',
+    audience: 'etudiants serieux de la Bible, Bibles d etude, contexte historique, culture hebraique et greco-romaine, theologie introductive',
+    include: scholarTopics,
+    avoid: [
+      'doctrines controversees',
+      'debats confessionnels',
+      'fausses informations historiques',
+      'speculation presentee comme certitude',
+      'questions ambigues'
+    ],
+    requiredFields: [
+      'reponse',
+      'explication',
+      'reference biblique',
+      'note historique separee quand utile'
+    ]
+  };
 }
 
 function logAiError(scope, message) {
@@ -1588,6 +1752,7 @@ function scoreGame(body) {
       isCorrect,
       points: isCorrect ? 10 + bonus : 0,
       explanation: question.explanation,
+      historicalNote: question.historicalNote,
       reference: question.reference
     };
   }).filter(Boolean);
@@ -1640,6 +1805,7 @@ function checkSingleAnswer(body) {
     isCorrect,
     points: isCorrect ? 10 + bonus : 0,
     explanation: question.explanation,
+    historicalNote: question.historicalNote,
     reference: question.reference
   };
 }
@@ -1653,18 +1819,32 @@ async function generateQuestions(input) {
     : ['qcm', 'vrai_faux', 'personnage'];
 
   if (!azureConfigured()) {
-    return selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+    const fallback = selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+    recordGeneratedQuestions(fallback, 'local');
+    return fallback;
   }
 
   const prompt = {
     category,
     level,
+    difficultyGuidance: difficultyGuidance(level),
     count,
     questionTypes: requestedTypes,
     theme: sanitizeString(input.theme || '').slice(0, 200),
     sourceText: sanitizeString(input.sourceText || '').slice(0, 6000),
     instruction: sanitizeString(input.instruction || '').slice(0, 800),
     textOnly: Boolean(input.textOnly),
+    antiRepetition: {
+      instruction: aiAntiRepetitionInstruction,
+      recentlyGeneratedQuestions: recentGeneratedQuestionTexts(category, level, 100),
+      rules: [
+        'ne pas reutiliser une question deja generee',
+        'ne pas reformuler legerement une ancienne question',
+        'varier personnages, livres, empires, lieux et themes',
+        'eviter meme reponse avec meme structure'
+      ],
+      rotationTopics
+    },
     outputShape: {
       questions: [{
         id: 'string',
@@ -1674,6 +1854,7 @@ async function generateQuestions(input) {
         correctAnswer: 'string',
         explanation: 'string',
         reference: 'string',
+        historicalNote: 'string optionnel, separe du texte biblique direct',
         difficulty: level,
         category
       }]
@@ -1694,7 +1875,11 @@ async function generateQuestions(input) {
       messages: [
         {
           role: 'system',
-          content: 'Tu es un generateur de quiz biblique pedagogique. Genere uniquement des questions bibliques fiables, claires, non ambigues, avec une bonne reponse exacte, des distracteurs plausibles, une explication courte et une reference biblique si possible. Ne genere pas de doctrine controversee comme verite absolue. Pour les questions historiques, distingue clairement le texte biblique du contexte historique issu des Bibles d etude. Si textOnly est vrai, n utilise que les informations presentes dans sourceText. Reponds uniquement en JSON valide.'
+          content: [
+            'Tu es un generateur de quiz biblique pedagogique. Genere uniquement des questions bibliques fiables, claires, non ambigues, avec une bonne reponse exacte, des distracteurs plausibles, une explication courte et une reference biblique si possible. Ne genere pas de doctrine controversee comme verite absolue. Pour les questions historiques, distingue clairement le texte biblique du contexte historique issu des Bibles d etude. Si textOnly est vrai, n utilise que les informations presentes dans sourceText. Reponds uniquement en JSON valide.',
+            aiAntiRepetitionInstruction,
+            isScholarLevel(level) ? scholarInstruction : ''
+          ].filter(Boolean).join(' ')
         },
         { role: 'user', content: JSON.stringify(prompt) }
       ],
@@ -1704,7 +1889,9 @@ async function generateQuestions(input) {
   });
 
   if (!response.ok) {
-    return selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+    const fallback = selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+    recordGeneratedQuestions(fallback, 'local');
+    return fallback;
   }
 
   const payload = await response.json();
@@ -1723,8 +1910,15 @@ async function generateQuestions(input) {
     category: q.category || category,
     isActive: true,
     createdAt: new Date().toISOString()
-  })).filter(validateQuestion);
-  return valid.length ? valid.slice(0, count) : selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+  })).filter((question) => validateQuestion(question) && !isDuplicateQuestion(question));
+  if (valid.length) {
+    const selected = valid.slice(0, count);
+    recordGeneratedQuestions(selected, 'AI');
+    return selected;
+  }
+  const fallback = selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+  recordGeneratedQuestions(fallback, 'local');
+  return fallback;
 }
 
 async function generateOperatorDrafts(input, method) {
@@ -1766,6 +1960,7 @@ function sanitizeQuestion(body) {
     options: options.length ? options : ['Vrai', 'Faux'],
     correctAnswer: sanitizeString(body.correctAnswer || '').slice(0, 180),
     explanation: sanitizeString(body.explanation || '').slice(0, 700),
+    historicalNote: sanitizeString(body.historicalNote || body.historyNote || '').slice(0, 500),
     reference: sanitizeString(body.reference || '').slice(0, 120),
     category: sanitizeString(body.category || 'random').slice(0, 80),
     level: sanitizeString(body.level || body.difficulty || 'debutant').slice(0, 80),
@@ -1822,6 +2017,7 @@ function sanitizeBankQuestion(body, bankId) {
     options: question.options,
     correctAnswer: question.correctAnswer,
     explanation: question.explanation,
+    historicalNote: question.historicalNote,
     reference: question.reference,
     category: question.category,
     difficulty: question.level,
@@ -1989,7 +2185,13 @@ function sanitizeString(value) {
 }
 
 function normalize(value) {
-  return sanitizeString(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return sanitizeString(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function safeEqual(a, b) {

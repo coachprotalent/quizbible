@@ -52,7 +52,7 @@
             <span>QCM, vrai/faux, versets, personnages, contexte historique.</span>
           </div>
           <div class="stats-strip">
-            <span><b>4</b> niveaux</span>
+            <span><b>5</b> niveaux</span>
             <span><b>17</b> categories</span>
             <span><b>+5</b> bonus vitesse</span>
           </div>
@@ -71,6 +71,10 @@
             <input name="name" placeholder="Nom du salon" value="Quiz entre amis" required>
             <select name="category" id="roomCategorySelect"></select>
             <select name="difficulty" id="roomLevelSelect"></select>
+            <div class="scholar-notice hidden" id="roomScholarNotice">
+              <strong>Scholar</strong>
+              <span>Etude avancee des Ecritures et du contexte historique. Ce niveau contient des questions avancees basees sur le contexte historique et les Bibles d'etude.</span>
+            </div>
             <label>Nombre de questions
               <div class="stepper"><button type="button" data-step="-1" data-target="questionsPerRound">-</button><input name="questionsPerRound" type="number" value="10" min="1" max="20"><button type="button" data-step="1" data-target="questionsPerRound">+</button></div>
             </label>
@@ -188,6 +192,10 @@
             Niveau
             <select name="level" id="levelSelect"></select>
           </label>
+          <div class="scholar-notice hidden" id="scholarNotice">
+            <strong>Scholar</strong>
+            <span>Etude avancee des Ecritures et du contexte historique. Ce niveau contient des questions avancees basees sur le contexte historique et les Bibles d'etude.</span>
+          </div>
           <label>
             Questions
             <select name="count">
