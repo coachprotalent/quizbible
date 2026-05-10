@@ -249,6 +249,8 @@ h3 {
 .results,
 .editor,
 .table-wrap,
+.score-help,
+.leaderboard-group,
 .admin-list,
 .admin-login {
   background: var(--surface);
@@ -259,6 +261,46 @@ h3 {
 
 .hero-panel {
   padding: 1rem;
+}
+
+.score-help {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  padding: 1rem;
+}
+
+.score-help h3,
+.score-help p {
+  margin: 0;
+}
+
+.score-help p {
+  color: var(--muted);
+}
+
+.leaderboard-groups {
+  display: grid;
+  gap: 1rem;
+}
+
+.leaderboard-group {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.leaderboard-group h3 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.leaderboard-group h3 span {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .scripture-card {

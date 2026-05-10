@@ -126,10 +126,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
-    const leaderboard = readJson('leaderboard.json')
-      .sort((a, b) => b.score - a.score || new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, 50);
-    sendJson(res, 200, { leaderboard });
+    sendJson(res, 200, { leaderboard: groupedLeaderboard() });
     return;
   }
 
@@ -1713,6 +1710,69 @@ function selectQuestions(category, level, count) {
   return shuffle(pool).slice(0, count);
 }
 
+function groupedLeaderboard() {
+  const limits = {
+    beginner: 1,
+    intermediate: 2,
+    advanced: 3,
+    expert: 4,
+    scholar: 5
+  };
+  const grouped = Object.fromEntries(Object.keys(limits).map((key) => [key, []]));
+  for (const row of readJson('leaderboard.json').map(normalizeLeaderboardRow)) {
+    const key = leaderboardLevelKey(row.level);
+    if (grouped[key]) grouped[key].push(row);
+  }
+  for (const [key, rows] of Object.entries(grouped)) {
+    grouped[key] = rows
+      .sort(compareLeaderboardRows)
+      .slice(0, limits[key])
+      .map((row, index) => ({ ...row, rank: index + 1 }));
+  }
+  return grouped;
+}
+
+function normalizeLeaderboardRow(row) {
+  const pointsObtenus = Number(row.pointsObtenus ?? row.score ?? 0);
+  const durationSeconds = Math.max(1, Number(row.durationSeconds ?? row.duration ?? 1));
+  const pointsMaxPossibles = Math.max(1, Number(row.pointsMaxPossibles ?? inferMaxPoints(row)));
+  const pourcentagePoints = Number.isFinite(Number(row.pourcentagePoints))
+    ? Number(row.pourcentagePoints)
+    : (pointsObtenus / pointsMaxPossibles) * 100;
+  return {
+    ...row,
+    pointsObtenus,
+    score: pointsObtenus,
+    pointsMaxPossibles,
+    pourcentagePoints,
+    scorePerformance: Number.isFinite(Number(row.scorePerformance)) ? Number(row.scorePerformance) : pointsObtenus / durationSeconds,
+    durationSeconds,
+    percent: Number.isFinite(Number(row.percent)) ? Number(row.percent) : Math.round(pourcentagePoints)
+  };
+}
+
+function inferMaxPoints(row) {
+  if (row.totalQuestions) return Number(row.totalQuestions) * 15;
+  return Math.max(Number(row.score || 0), 1);
+}
+
+function compareLeaderboardRows(a, b) {
+  return b.scorePerformance - a.scorePerformance
+    || b.pourcentagePoints - a.pourcentagePoints
+    || a.durationSeconds - b.durationSeconds
+    || new Date(b.createdAt) - new Date(a.createdAt);
+}
+
+function leaderboardLevelKey(level) {
+  const normalized = normalize(level || '');
+  if (['debutant', 'debutants', 'beginner'].includes(normalized)) return 'beginner';
+  if (['intermediaire', 'intermediate'].includes(normalized)) return 'intermediate';
+  if (['avance', 'advanced'].includes(normalized)) return 'advanced';
+  if (normalized === 'expert') return 'expert';
+  if (normalized === 'scholar') return 'scholar';
+  return 'beginner';
+}
+
 function broadCategoryMatch(category, questionCategory) {
   if (category === 'ancien_testament') {
     return ['pentateuque', 'livres_historiques', 'livres_poetiques', 'livres_prophetiques', 'vie_des_prophetes', 'contexte_historique'].includes(questionCategory);
@@ -1758,18 +1818,28 @@ function scoreGame(body) {
   }).filter(Boolean);
   const totalQuestions = review.length;
   const percent = totalQuestions ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
+  const durationSeconds = Math.max(1, Number(body.duration || 0));
+  const pointsMaxPossibles = totalQuestions * 15;
+  const pourcentagePoints = pointsMaxPossibles ? (score / pointsMaxPossibles) * 100 : 0;
+  const scorePerformance = score / durationSeconds;
   const levelEstimate = percent >= 90 ? 'Expert' : percent >= 75 ? 'Avance' : percent >= 55 ? 'Intermediaire' : 'Debutant';
   const createdAt = new Date().toISOString();
   const playerName = sanitizeString(body.playerName || 'Anonyme').slice(0, 40) || 'Anonyme';
+  const level = sanitizeString(body.level || 'debutant');
   const session = {
     id: `gs-${crypto.randomUUID()}`,
     playerName,
     category: sanitizeString(body.category || 'random'),
-    level: sanitizeString(body.level || 'debutant'),
+    level,
     score,
+    pointsObtenus: score,
+    pointsMaxPossibles,
+    pourcentagePoints,
+    scorePerformance,
     totalQuestions,
     correctAnswers,
-    duration: Number(body.duration || 0),
+    duration: durationSeconds,
+    durationSeconds,
     createdAt
   };
   return {
@@ -1778,8 +1848,14 @@ function scoreGame(body) {
       id: `lb-${crypto.randomUUID()}`,
       playerName,
       score,
+      pointsObtenus: score,
+      pointsMaxPossibles,
+      pourcentagePoints,
+      scorePerformance,
+      durationSeconds,
       category: session.category,
-      level: session.level,
+      level,
+      percent,
       createdAt
     },
     review,

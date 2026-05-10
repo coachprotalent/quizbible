@@ -355,15 +355,49 @@ async function loadChallenges() {
 
 async function loadLeaderboard() {
   const { leaderboard } = await api('/api/leaderboard');
-  $('#leaderboardRows').innerHTML = leaderboard.length ? leaderboard.map((row) => `
-    <tr>
-      <td>${escapeHtml(row.playerName)}</td>
-      <td><strong>${row.score}</strong></td>
-      <td>${escapeHtml(row.category)}</td>
-      <td>${escapeHtml(row.level)}</td>
-      <td>${new Date(row.createdAt).toLocaleDateString('fr-FR')}</td>
-    </tr>
-  `).join('') : '<tr><td colspan="5">Aucun score pour le moment.</td></tr>';
+  const groups = [
+    ['beginner', 'Debutant', 1],
+    ['intermediate', 'Intermediaire', 2],
+    ['advanced', 'Avance', 3],
+    ['expert', 'Expert', 4],
+    ['scholar', 'Scholar', 5]
+  ];
+  $('#leaderboardGroups').innerHTML = groups.map(([key, label, limit]) => {
+    const rows = leaderboard?.[key] || [];
+    return `
+      <section class="leaderboard-group">
+        <h3>${escapeHtml(label)} <span>Top ${limit}</span></h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Rang</th>
+                <th>Joueur</th>
+                <th>Niveau</th>
+                <th>Points</th>
+                <th>% reussite</th>
+                <th>Temps</th>
+                <th>Score performance</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.length ? rows.map((row) => `
+                <tr>
+                  <td>${row.rank}</td>
+                  <td>${escapeHtml(row.playerName)}</td>
+                  <td>${escapeHtml(row.level)}</td>
+                  <td><strong>${Number(row.pointsObtenus || row.score || 0)}</strong></td>
+                  <td>${formatPercent(row.pourcentagePoints ?? row.percent)}</td>
+                  <td>${formatDurationSeconds(row.durationSeconds || row.duration || 0)}</td>
+                  <td>${Number(row.scorePerformance || 0).toFixed(2)} pts/s</td>
+                </tr>
+              `).join('') : '<tr><td colspan="7">Aucun score pour ce niveau.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }).join('');
 }
 
 async function loadRooms() {
@@ -1127,6 +1161,17 @@ function showAccessDenied(scope, error) {
 function setAccessMessage(scope, message) {
   const target = $(`#${scope}AccessMessage`);
   if (target) target.textContent = message || '';
+}
+
+function formatPercent(value) {
+  return `${Number(value || 0).toFixed(1).replace(/\.0$/, '')}%`;
+}
+
+function formatDurationSeconds(value) {
+  const totalSeconds = Math.max(0, Math.round(Number(value || 0)));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
 }
 
 async function addQuestion(event) {

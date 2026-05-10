@@ -258,20 +258,15 @@
           <p class="eyebrow">Scores</p>
           <h2>Classement</h2>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Joueur</th>
-                <th>Score</th>
-                <th>Categorie</th>
-                <th>Niveau</th>
-                <th>Date</th>
-              </tr>
-            </thead>
-            <tbody id="leaderboardRows"></tbody>
-          </table>
+        <div class="score-help">
+          <h3>Comment le score est calcule ?</h3>
+          <p>Points obtenus : total des points gagnes pendant la partie.</p>
+          <p>Temps : duree totale utilisee pour repondre.</p>
+          <p>Score performance = points obtenus ÷ secondes utilisees.</p>
+          <p>Plus tu reponds vite et juste, plus ton score est eleve.</p>
+          <p>Exemple : 120 points en 60 secondes = 2 points/seconde.</p>
         </div>
+        <div class="leaderboard-groups" id="leaderboardGroups"></div>
       </section>
 
       <section class="view shell" id="loginView">
