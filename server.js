@@ -366,6 +366,31 @@ async function handleAdminApi(req, res, url, adminUser) {
     return;
   }
 
+  if (req.method === 'DELETE' && url.pathname === '/api/admin/leaderboard/reset') {
+    const level = sanitizeString(url.searchParams.get('level') || '');
+    const allowedLevels = new Set(levels.map((item) => item.id));
+    const leaderboard = readJson('leaderboard.json');
+
+    if (level && !allowedLevels.has(level)) {
+      sendJson(res, 400, { error: 'Niveau de classement invalide' });
+      return;
+    }
+
+    const targetLevelKey = level ? leaderboardLevelKey(level) : '';
+    const nextLeaderboard = level
+      ? leaderboard.filter((row) => leaderboardLevelKey(row.level) !== targetLevelKey)
+      : [];
+
+    writeJson('leaderboard.json', nextLeaderboard);
+    sendJson(res, 200, {
+      ok: true,
+      deletedCount: leaderboard.length - nextLeaderboard.length,
+      remainingCount: nextLeaderboard.length,
+      level: level || null
+    });
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/admin/users') {
     sendJson(res, 200, { users: readJson('users.json').map(publicUser) });
     return;

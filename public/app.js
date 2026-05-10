@@ -1040,6 +1040,23 @@ async function loadAdmin() {
     <p><strong>${data.leaderboard.length}</strong> scores enregistres</p>
     <p><strong>${data.challenges.length}</strong> challenges</p>
   `;
+  const leaderboardLevels = [
+    ['debutant', 'Debutant'],
+    ['intermediaire', 'Intermediaire'],
+    ['avance', 'Avance'],
+    ['expert', 'Expert'],
+    ['scholar', 'Scholar']
+  ];
+  $('#adminLeaderboard').innerHTML = `
+    <p><strong>${data.leaderboard.length}</strong> entree(s) dans le classement.</p>
+    <div class="admin-item-actions">
+      <button class="secondary danger" data-leaderboard-reset="">Reinitialiser le leaderboard</button>
+      ${leaderboardLevels.map(([level, label]) => {
+        const count = (data.leaderboard || []).filter((row) => row.level === level).length;
+        return `<button class="secondary" data-leaderboard-reset="${escapeHtml(level)}">${escapeHtml(label)} (${count})</button>`;
+      }).join('')}
+    </div>
+  `;
   $('#adminRooms').innerHTML = data.rooms.map((room) => `
     <article class="admin-item">
       <strong>${escapeHtml(room.name)}</strong>
@@ -1101,6 +1118,7 @@ async function loadAdmin() {
   $$('[data-bank-toggle]').forEach((button) => button.addEventListener('click', () => adminToggleBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankToggle))));
   $$('[data-bank-assign]').forEach((button) => button.addEventListener('click', () => adminAssignBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankAssign))));
   $$('[data-bank-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteBank(button.dataset.bankDelete)));
+  $$('[data-leaderboard-reset]').forEach((button) => button.addEventListener('click', () => adminResetLeaderboard(button.dataset.leaderboardReset)));
 }
 
 async function handleProtectedView(view) {
@@ -1364,6 +1382,15 @@ async function adminDeleteRoom(id) {
 async function adminRegenerateRoom(id) {
   await api(`/api/admin/rooms/${encodeURIComponent(id)}/regenerate`, { method: 'POST', body: {} });
   await loadAdmin();
+}
+
+async function adminResetLeaderboard(level = '') {
+  if (!confirm('Cette action supprimera tous les scores du classement. Continuer ?')) return;
+  const query = level ? `?level=${encodeURIComponent(level)}` : '';
+  const result = await api(`/api/admin/leaderboard/reset${query}`, { method: 'DELETE', body: {} });
+  await Promise.all([loadAdmin(), loadLeaderboard()]);
+  const scope = level ? ` pour le niveau ${level}` : '';
+  setAccessMessage('admin', `${result.deletedCount || 0} score(s) supprime(s)${scope}. Le classement est reinitialise.`);
 }
 
 async function adminUpdateUserRole(id, role) {
