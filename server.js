@@ -1220,7 +1220,7 @@ async function callAzureJson(messages) {
 }
 
 function sanitizeRoundQuestion(body) {
-  const question = sanitizeQuestion(body);
+  const question = shuffleQuestionOptions(sanitizeQuestion(body));
   return {
     id: body.id || `rq-${crypto.randomUUID()}`,
     roundId: sanitizeString(body.roundId || '').slice(0, 100),
@@ -1724,7 +1724,7 @@ function broadCategoryMatch(category, questionCategory) {
 }
 
 function withoutAnswer(question) {
-  const { correctAnswer, ...safe } = question;
+  const { correctAnswer, ...safe } = shuffleQuestionOptions(question);
   return safe;
 }
 
@@ -2234,8 +2234,20 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function shuffleQuestionOptions(question) {
+  return {
+    ...question,
+    options: shuffle(question.options || [])
+  };
+}
+
 function shuffle(items) {
-  return [...items].sort(() => Math.random() - 0.5);
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(index + 1);
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
 }
 
 function encouragement(percent) {
