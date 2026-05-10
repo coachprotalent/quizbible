@@ -233,7 +233,12 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
     const token = getCookie(req, 'qb_user_session');
     if (token) userSessions.delete(token);
-    res.setHeader('Set-Cookie', 'qb_user_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+    const adminToken = getCookie(req, 'qb_session');
+    if (adminToken) sessions.delete(adminToken);
+    res.setHeader('Set-Cookie', [
+      'qb_user_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
+      'qb_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+    ]);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -309,13 +314,9 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/admin/login') {
     const body = await readBody(req);
-    const username = process.env.ADMIN_USERNAME || 'admin';
-    const password = process.env.ADMIN_PASSWORD || 'change-me';
-    if (safeEqual(String(body.username || ''), username) && safeEqual(String(body.password || ''), password)) {
-      const token = crypto.randomBytes(32).toString('hex');
-      sessions.set(token, { createdAt: Date.now(), username });
-      res.setHeader('Set-Cookie', `qb_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800`);
-      sendJson(res, 200, { ok: true });
+    if (envAdminCredentialsMatch(body.username, body.password)) {
+      sendUserSession(res, envAdminUser());
+      sendJson(res, 200, { ok: true, user: envAdminUser() });
       return;
     }
     sendJson(res, 401, { error: 'Identifiants invalides' });
@@ -325,7 +326,12 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/admin/logout') {
     const token = getCookie(req, 'qb_session');
     if (token) sessions.delete(token);
-    res.setHeader('Set-Cookie', 'qb_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+    const userToken = getCookie(req, 'qb_user_session');
+    if (userToken) userSessions.delete(userToken);
+    res.setHeader('Set-Cookie', [
+      'qb_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
+      'qb_user_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+    ]);
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -355,7 +361,7 @@ async function handleAdminApi(req, res, url, adminUser) {
       rounds: readJson('rounds.json'),
       roundQuestions: readJson('roundQuestions.json'),
       answers: readJson('answers.json'),
-      users: readJson('users.json').map(publicUser),
+      users: [envAdminUser(), ...readJson('users.json').map(publicUser)],
       questionBanks: readJson('questionBanks.json'),
       bankQuestions: readJson('bankQuestions.json'),
       challengeQuestions: readJson('challengeQuestions.json'),
@@ -392,7 +398,7 @@ async function handleAdminApi(req, res, url, adminUser) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/admin/users') {
-    sendJson(res, 200, { users: readJson('users.json').map(publicUser) });
+    sendJson(res, 200, { users: [envAdminUser(), ...readJson('users.json').map(publicUser)] });
     return;
   }
 
@@ -405,6 +411,10 @@ async function handleAdminApi(req, res, url, adminUser) {
 
   const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)(?:\/(password|disable))?$/);
   if (adminUserMatch && req.method === 'PATCH') {
+    if (decodeURIComponent(adminUserMatch[1]) === 'env-admin') {
+      sendJson(res, 403, { error: 'Admin systeme non modifiable' });
+      return;
+    }
     const result = patchUserByAdmin(decodeURIComponent(adminUserMatch[1]), adminUserMatch[2] || 'profile', await readBody(req));
     if (result.error) return sendJson(res, result.status || 400, { error: result.error });
     sendJson(res, 200, { user: publicUser(result.user) });
@@ -2165,10 +2175,15 @@ function registerUser(body) {
 }
 
 function loginUser(body) {
-  const login = sanitizeString(body.email || body.username || '').toLowerCase();
+  const rawLogin = sanitizeString(body.email || body.username || '');
+  const login = rawLogin.toLowerCase();
   const user = readJson('users.json').find((item) => item.email === login || normalize(item.name) === normalize(login));
-  if (!user || !user.isActive || user.passwordHash !== hashPassword(String(body.password || ''))) return { error: 'Identifiants invalides', status: 401 };
-  return { user };
+  if (user) {
+    if (!user.isActive || user.passwordHash !== hashPassword(String(body.password || ''))) return { error: 'Identifiants invalides', status: 401 };
+    return { user };
+  }
+  if (envAdminCredentialsMatch(rawLogin, body.password)) return { user: envAdminUser() };
+  return { error: 'Identifiants invalides', status: 401 };
 }
 
 function updateUserAdmin(userId, field, body) {
@@ -2237,7 +2252,7 @@ function patchUserByAdmin(userId, action, body) {
 
 function sendUserSession(res, user) {
   const token = crypto.randomBytes(32).toString('hex');
-  userSessions.set(token, { userId: user.id, createdAt: Date.now() });
+  userSessions.set(token, { userId: user.id, source: user.source || 'user', createdAt: Date.now() });
   res.setHeader('Set-Cookie', `qb_user_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
 }
 
@@ -2249,6 +2264,7 @@ function currentUser(req) {
     userSessions.delete(token);
     return null;
   }
+  if (session.source === 'env' || session.userId === 'env-admin') return envAdminUser();
   const user = readJson('users.json').find((item) => item.id === session.userId && item.isActive !== false);
   return user || null;
 }
@@ -2273,8 +2289,26 @@ function canOperateStructure(user, item) {
 
 function publicUser(user) {
   if (!user) return null;
+  if (user.source === 'env') return envAdminUser();
   const { passwordHash, ...safe } = user;
   return safe;
+}
+
+function envAdminUser() {
+  const username = process.env.ADMIN_USERNAME || 'admin';
+  return {
+    id: 'env-admin',
+    username,
+    name: 'Admin systeme (.env)',
+    role: 'admin',
+    source: 'env'
+  };
+}
+
+function envAdminCredentialsMatch(username, password) {
+  const expectedUsername = process.env.ADMIN_USERNAME || 'admin';
+  const expectedPassword = process.env.ADMIN_PASSWORD || 'change-me';
+  return safeEqual(String(username || ''), expectedUsername) && safeEqual(String(password || ''), expectedPassword);
 }
 
 function hashPassword(password) {

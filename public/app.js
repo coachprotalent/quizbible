@@ -51,6 +51,9 @@ async function init() {
   state.meta = await api('/api/meta');
   fillSelects();
   await Promise.all([loadChallenges(), loadLeaderboard(), loadRooms(), loadQuestionBanks()]);
+  const redirect = new URLSearchParams(location.search).get('redirect');
+  if (redirect === '/admin' || redirect === 'admin') pendingProtectedView = 'admin';
+  if (redirect === '/operator' || redirect === 'operator') pendingProtectedView = 'operator';
   handleInitialHash();
   restoreCompetitionSession();
   if (location.pathname === '/admin') showView('admin');
@@ -778,6 +781,7 @@ async function adminLogin(event) {
     setAccessMessage('admin', '');
     await syncNavigationRole();
     await loadAdmin();
+    history.replaceState(null, '', '/admin');
   } catch (error) {
     alert(error.message);
   }
@@ -797,6 +801,7 @@ async function loginUserForm(event) {
       const nextView = pendingProtectedView;
       pendingProtectedView = '';
       showView(nextView);
+      history.replaceState(null, '', `/${nextView}`);
     } else {
       showView(user?.role === 'admin' ? 'admin' : user?.role === 'operator' ? 'operator' : 'home');
       if (!['admin', 'operator'].includes(user?.role)) alert('Acces non autorise');
@@ -812,6 +817,7 @@ async function adminLogout() {
   $('#adminLogin').classList.remove('hidden');
   setAccessMessage('admin', '');
   await syncNavigationRole();
+  history.replaceState(null, '', '/login?redirect=/admin');
 }
 
 async function operatorLogin(event) {
@@ -827,6 +833,7 @@ async function operatorLogin(event) {
     setAccessMessage('operator', '');
     await syncNavigationRole();
     await loadOperator();
+    history.replaceState(null, '', '/operator');
   } catch (error) {
     alert(error.message);
   }
@@ -838,6 +845,7 @@ async function operatorLogout() {
   $('#operatorLogin').classList.remove('hidden');
   setAccessMessage('operator', '');
   await syncNavigationRole();
+  history.replaceState(null, '', '/login?redirect=/operator');
 }
 
 async function loadOperator() {
@@ -1075,14 +1083,14 @@ async function loadAdmin() {
   `;
   $('#adminUsers').innerHTML = (data.users || []).map((user) => `
     <article class="admin-item">
-      <strong>${escapeHtml(user.name || user.email)}</strong>
-      <p>${escapeHtml(user.email)} - ${escapeHtml(user.role)} - ${user.isActive === false ? 'desactive' : 'actif'}</p>
+      <strong>${escapeHtml(user.source === 'env' ? 'Admin systeme (.env)' : (user.name || user.email || user.username))}</strong>
+      <p>${escapeHtml(user.email || user.username || '')} - ${escapeHtml(user.role)} - ${user.source === 'env' ? 'permanent' : (user.isActive === false ? 'desactive' : 'actif')}</p>
       <div class="admin-item-actions">
-        <select data-user-role="${escapeHtml(user.id)}">
+        <select data-user-role="${escapeHtml(user.id)}" ${user.source === 'env' ? 'disabled' : ''}>
           ${['admin', 'operator', 'host', 'player'].map((role) => `<option value="${role}" ${user.role === role ? 'selected' : ''}>${role}</option>`).join('')}
         </select>
-        <button class="secondary" data-user-status="${escapeHtml(user.id)}">${user.isActive === false ? 'Activer' : 'Desactiver'}</button>
-        <button class="secondary" data-user-password="${escapeHtml(user.id)}">Mot de passe</button>
+        <button class="secondary" data-user-status="${escapeHtml(user.id)}" ${user.source === 'env' ? 'disabled' : ''}>${user.isActive === false ? 'Activer' : 'Desactiver'}</button>
+        <button class="secondary" data-user-password="${escapeHtml(user.id)}" ${user.source === 'env' ? 'disabled' : ''}>Mot de passe</button>
       </div>
     </article>
   `).join('') || '<p>Aucun utilisateur.</p>';
@@ -1166,6 +1174,7 @@ async function currentAuthUser() {
 function redirectToLogin(message, targetView = '') {
   pendingProtectedView = targetView;
   showView('login');
+  if (targetView) history.replaceState(null, '', `/login?redirect=/${targetView}`);
   $('#loginMessage').textContent = message || '';
 }
 
