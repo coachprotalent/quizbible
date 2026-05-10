@@ -54,6 +54,7 @@ async function init() {
   restoreCompetitionSession();
   if (location.pathname === '/admin') showView('admin');
   if (location.pathname === '/operator') showView('operator');
+  if (location.pathname === '/login') showView('login');
 }
 
 function handleInitialHash() {
@@ -102,8 +103,7 @@ function showView(view) {
   if (view === 'leaderboard') loadLeaderboard();
   if (view === 'challenges') loadChallenges();
   if (view === 'competition') loadRooms();
-  if (view === 'admin') loadAdmin().catch((error) => showAccessDenied('admin', error));
-  if (view === 'operator') loadOperator().catch((error) => showAccessDenied('operator', error));
+  if (view === 'admin' || view === 'operator') handleProtectedView(view);
 }
 
 function toggleMobileMenu() {
@@ -161,6 +161,9 @@ async function syncNavigationRole() {
   const hasManagementLinks = $$('[data-role-nav]').some((button) => !button.hidden);
   const managementMenu = $('#managementMenu');
   if (managementMenu) managementMenu.hidden = !hasManagementLinks;
+  $$('[data-auth-nav="login"]').forEach((button) => {
+    button.hidden = Boolean(user) || legacyAdminOpen;
+  });
 }
 
 function bindForms() {
@@ -168,6 +171,7 @@ function bindForms() {
   $('#nextQuestion').addEventListener('click', nextQuestion);
   $('#quitGame').addEventListener('click', quitGame);
   $('#adminLogin').addEventListener('submit', adminLogin);
+  $('#loginForm').addEventListener('submit', loginUserForm);
   $('#adminLogout').addEventListener('click', adminLogout);
   $('#adminRefresh').addEventListener('click', loadAdmin);
   $('#adminUserEditor').addEventListener('submit', adminCreateUser);
@@ -776,6 +780,29 @@ async function adminLogin(event) {
   }
 }
 
+async function loginUserForm(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  try {
+    const { user } = await api('/api/auth/login', {
+      method: 'POST',
+      body: { email: form.get('email'), password: form.get('password') }
+    });
+    $('#loginMessage').textContent = '';
+    await syncNavigationRole();
+    if (user?.role === 'admin') {
+      showView('admin');
+    } else if (user?.role === 'operator') {
+      showView('operator');
+    } else {
+      showView('home');
+      alert('Acces non autorise');
+    }
+  } catch (error) {
+    $('#loginMessage').textContent = error.message || 'Connexion impossible';
+  }
+}
+
 async function adminLogout() {
   await api('/api/admin/logout', { method: 'POST', body: {} });
   $('#adminPanel').classList.add('hidden');
@@ -1071,6 +1098,53 @@ async function loadAdmin() {
   $$('[data-bank-toggle]').forEach((button) => button.addEventListener('click', () => adminToggleBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankToggle))));
   $$('[data-bank-assign]').forEach((button) => button.addEventListener('click', () => adminAssignBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankAssign))));
   $$('[data-bank-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteBank(button.dataset.bankDelete)));
+}
+
+async function handleProtectedView(view) {
+  if (view === 'admin') {
+    try {
+      await loadAdmin();
+      await syncNavigationRole();
+      return;
+    } catch (error) {
+      const { user } = await currentAuthUser();
+      if (!user) {
+        redirectToLogin('Connexion requise pour acceder a l administration.');
+        return;
+      }
+      showAccessDenied('admin', new Error(user.role === 'admin' ? error.message : 'Acces non autorise'));
+      return;
+    }
+  }
+
+  const { user } = await currentAuthUser();
+  if (!user) {
+    redirectToLogin('Connexion requise pour acceder a l espace operateur.');
+    return;
+  }
+  if (!['admin', 'operator'].includes(user.role)) {
+    showAccessDenied('operator', new Error('Acces non autorise'));
+    return;
+  }
+  try {
+    await loadOperator();
+    await syncNavigationRole();
+  } catch (error) {
+    showAccessDenied('operator', error);
+  }
+}
+
+async function currentAuthUser() {
+  try {
+    return await api('/api/auth/me');
+  } catch {
+    return { user: null };
+  }
+}
+
+function redirectToLogin(message) {
+  showView('login');
+  $('#loginMessage').textContent = message || '';
 }
 
 function showAccessDenied(scope, error) {

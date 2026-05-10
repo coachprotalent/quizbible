@@ -1036,6 +1036,22 @@ body.internal-view .mobile-home {
   font-weight: 800;
 }
 
+.management-trigger {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-height: 3.25rem;
+  padding: 1rem;
+  font-size: 1.25rem;
+  font-weight: 800;
+  text-align: left;
+}
+
+.management-dropdown {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--line);
+}
+
 .management-dropdown button {
   width: 100%;
 }

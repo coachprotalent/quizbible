@@ -30,8 +30,9 @@
         <button data-view="competition">Competition</button>
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
+        <button data-view="login" data-auth-nav="login">Connexion</button>
         <div class="management-menu" id="managementMenu" hidden>
-          <button class="management-trigger" id="managementTrigger" type="button" aria-expanded="false">Espace gestion</button>
+          <button class="management-trigger" id="managementTrigger" type="button" aria-expanded="false">Gestion</button>
           <div class="management-dropdown" id="managementDropdown">
             <button data-view="admin" data-role-nav="admin">Administrateur</button>
             <button data-view="operator" data-role-nav="operator">Operateur</button>
@@ -277,6 +278,19 @@
             <tbody id="leaderboardRows"></tbody>
           </table>
         </div>
+      </section>
+
+      <section class="view shell" id="loginView">
+        <div class="section-head">
+          <p class="eyebrow">Connexion</p>
+          <h2>Acceder a votre espace</h2>
+        </div>
+        <form class="admin-login" id="loginForm">
+          <input name="email" placeholder="Email ou username" autocomplete="username" required>
+          <input name="password" type="password" placeholder="Mot de passe" autocomplete="current-password" required>
+          <button class="primary" type="submit">Connexion</button>
+        </form>
+        <p class="form-message" id="loginMessage" role="status"></p>
       </section>
 
       <section class="view shell" id="adminView">

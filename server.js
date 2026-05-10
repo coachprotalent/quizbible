@@ -1635,7 +1635,7 @@ function appendJson(file, item) {
 }
 
 function serveStatic(req, res, pathname) {
-  const cleanPath = pathname === '/' || pathname === '/admin' || pathname === '/operator' ? '/index.html' : pathname;
+  const cleanPath = pathname === '/' || pathname === '/admin' || pathname === '/operator' || pathname === '/login' ? '/index.html' : pathname;
   const fullPath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
   if (!fullPath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
