@@ -254,6 +254,7 @@ function levelRank(level) {
 
 async function startGame(event) {
   event.preventDefault();
+  const submit = event.submitter;
   const form = new FormData(event.currentTarget);
   state.playerName = form.get('playerName') || 'Anonyme';
   state.category = form.get('category');
@@ -262,24 +263,68 @@ async function startGame(event) {
   state.currentIndex = 0;
   state.score = 0;
   state.answers = [];
-  state.startedAt = Date.now();
-  const response = await api('/api/start-game', {
-    method: 'POST',
-    body: {
-      category: state.category,
-      level: state.level,
-      count: Number(form.get('count')),
-      playerName: state.playerName,
-      recentQuestions: recentLocalQuestionHistory(state.playerName, state.level)
-    }
-  });
-  state.gameSessionId = response.gameSessionId || '';
-  state.questions = response.questions;
   setGameImmersive(true);
   window.scrollTo({ top: 0, left: 0 });
-  $('#gameBoard').classList.remove('hidden');
+  $('#gameBoard').classList.add('hidden');
   $('#results').classList.add('hidden');
-  renderQuestion();
+  renderSoloPreparation();
+  setButtonLoading(submit, true);
+  try {
+    const response = await api('/api/start-game', {
+      method: 'POST',
+      body: {
+        category: state.category,
+        level: state.level,
+        count: Number(form.get('count')),
+        playerName: state.playerName,
+        recentQuestions: recentLocalQuestionHistory(state.playerName, state.level)
+      }
+    });
+    state.gameSessionId = response.gameSessionId || '';
+    state.questions = response.questions;
+    await runSoloCountdown();
+    state.startedAt = Date.now();
+    $('#results').classList.add('hidden');
+    $('#gameBoard').classList.remove('hidden');
+    renderQuestion();
+  } catch (error) {
+    $('#results').classList.remove('hidden');
+    $('#results').innerHTML = `<p class="eyebrow">Erreur</p><h2>Preparation impossible</h2><p>${escapeHtml(error.message || 'Impossible de preparer les questions.')}</p>`;
+  } finally {
+    setButtonLoading(submit, false);
+  }
+}
+
+function renderSoloPreparation() {
+  $('#results').classList.remove('hidden');
+  $('#results').innerHTML = `
+    <div class="loading-state">
+      <span class="spinner" aria-hidden="true"></span>
+      <p class="eyebrow">Preparation des questions</p>
+      <h2>Nous preparons les questions bibliques pour votre partie.</h2>
+      <p>L'IA peut prendre quelques secondes selon le niveau choisi.</p>
+    </div>
+  `;
+}
+
+function runSoloCountdown() {
+  return new Promise((resolve) => {
+    let count = 3;
+    $('#results').classList.remove('hidden');
+    const render = () => {
+      $('#results').innerHTML = `<p class="eyebrow">Lancement</p><h2>La partie commence dans...</h2><strong class="countdown-number">${count}</strong>`;
+    };
+    render();
+    const id = setInterval(() => {
+      count -= 1;
+      if (count <= 0) {
+        clearInterval(id);
+        resolve();
+        return;
+      }
+      render();
+    }, 1000);
+  });
 }
 
 function quitGame() {
@@ -1533,7 +1578,7 @@ function renderCompetitionState(data) {
   competition.room = data.room;
   competition.participant = data.participant;
   competition.round = data.round;
-  setCompetitionImmersive(['starting', 'question_active', 'question_reveal', 'between_questions', 'finished'].includes(data.phase));
+  setCompetitionImmersive(['preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions', 'finished'].includes(data.phase));
   syncCompetitionCountdown(data);
   const room = data.room;
   $('#roomPanel').classList.remove('hidden');
@@ -1551,6 +1596,7 @@ function renderCompetitionState(data) {
     </article>
   `).join('') || '<p>Aucun tour.</p>';
   renderRoomLeaderboard(data.leaderboard || []);
+  $('#startRound').disabled = ['preparing_questions', 'starting_countdown', 'question_active', 'question_reveal', 'between_questions'].includes(data.phase);
   renderPhase(data);
 }
 
@@ -1574,10 +1620,29 @@ function renderPhase(data) {
       : '<p class="eyebrow">Salle d attente</p><h2>Partagez le code</h2><p>La partie commencera quand le createur cliquera sur Lancer la partie.</p>';
     return;
   }
-  if (phase === 'starting') {
+  if (phase === 'preparing_questions') {
     $('#competitionBoard').classList.add('hidden');
     $('#competitionResults').classList.remove('hidden');
-    $('#competitionResults').innerHTML = `<p class="eyebrow">Lancement</p><h2>Depart dans ${data.countdownSeconds || 1}s</h2>`;
+    $('#competitionResults').innerHTML = `
+      <div class="loading-state">
+        <span class="spinner" aria-hidden="true"></span>
+        <p class="eyebrow">Preparation des questions</p>
+        <h2>Nous preparons les questions bibliques pour votre partie.</h2>
+        <p>L'IA peut prendre quelques secondes selon le niveau choisi.</p>
+        <p>Merci de patienter, la partie va bientot commencer pour tous les joueurs.</p>
+      </div>
+    `;
+    return;
+  }
+  if (phase === 'starting_countdown' || phase === 'starting') {
+    $('#competitionBoard').classList.add('hidden');
+    $('#competitionResults').classList.remove('hidden');
+    $('#competitionResults').innerHTML = `
+      ${data.preparationMessage && data.preparationMessage !== 'Questions pretes.' ? `<p class="form-message ok">${escapeHtml(data.preparationMessage)}</p>` : ''}
+      <p class="eyebrow">Lancement</p>
+      <h2>La partie commence dans...</h2>
+      <strong class="countdown-number">${data.countdownSeconds || 1}</strong>
+    `;
     return;
   }
   if (phase === 'finished') {
@@ -1673,7 +1738,17 @@ async function startCompetitionRound(event) {
   if (!competition.room) return;
   const button = event?.currentTarget || $('#startRound');
   setButtonLoading(button, true);
-  setRoomActionMessage('Lancement de la partie...', true);
+  button.disabled = true;
+  setRoomActionMessage('Preparation des questions...', true);
+  renderPhase({
+    room: competition.room,
+    phase: 'preparing_questions',
+    participants: competition.lastState?.participants || competition.room.participants || [],
+    leaderboard: competition.lastState?.leaderboard || [],
+    score: competition.lastState?.score || 0,
+    totalQuestions: 0,
+    questionIndex: 0
+  });
   try {
     const creatorId = localStorage.getItem('quizBibleCreatorId') || '';
     const participantId = competition.participant?.id || getStoredParticipant(competition.room.id);
@@ -1683,12 +1758,13 @@ async function startCompetitionRound(event) {
     });
     renderCompetitionState(data);
     startCompetitionPolling();
-    setRoomActionMessage('Partie lancee.', true);
+    setRoomActionMessage('Preparation lancee.', true);
   } catch (error) {
     console.error('startCompetitionRound failed', error);
     setRoomActionMessage(error.message || 'Lancement impossible.');
   } finally {
     setButtonLoading(button, false);
+    button.disabled = ['preparing_questions', 'starting_countdown', 'question_active', 'question_reveal', 'between_questions'].includes(competition.lastState?.phase);
   }
 }
 
@@ -1754,7 +1830,13 @@ function syncCompetitionCountdown(data) {
 
   const phaseEndsAt = data.phaseEndsAt ? new Date(data.phaseEndsAt).getTime() : 0;
   const serverNow = data.serverNow ? new Date(data.serverNow).getTime() : Date.now();
-  if (!phaseEndsAt) return;
+  if (!phaseEndsAt) {
+    if (data.phase === 'preparing_questions') {
+      $('#competitionTimer').textContent = '';
+      $('#competitionTimerBar').style.width = '0%';
+    }
+    return;
+  }
 
   const serverOffset = serverNow - Date.now();
   const phaseKey = `${data.round?.id || 'room'}:${data.phase}:${data.questionIndex}:${phaseEndsAt}`;
@@ -1869,6 +1951,8 @@ function labelPhase(phase) {
     waiting: 'Salle d attente',
     starting: 'Lancement',
     question_active: 'Question en cours',
+    preparing_questions: 'Preparation des questions',
+    starting_countdown: 'Compte a rebours',
     question_reveal: 'Correction',
     between_questions: 'Prochaine question',
     finished: 'Termine',

@@ -656,13 +656,14 @@ async function handleRoomAction(req, res, match, url) {
       return sendJson(res, 409, { error: `La competition commence dans ${formatDuration(new Date(room.scheduledStartAt).getTime() - now.getTime())}.` });
     }
     if (new Date(room.endDate) <= now) return sendJson(res, 409, { error: 'Le creneau de competition est termine.' });
-    try {
-      const round = createRound(room, 'starting');
-      await createQuestionsForRound(room, round);
-      sendJson(res, 201, buildRoomState(findRoom(room.id, code), body.participantId));
-    } catch (error) {
-      sendJson(res, 400, { error: error.message || 'Impossible de lancer la partie.' });
+    const existingRound = currentRoundForRoom(room.id);
+    if (existingRound && ['preparing_questions', 'starting_countdown', 'question_active', 'question_reveal', 'between_questions'].includes(existingRound.phase)) {
+      sendJson(res, 200, buildRoomState(findRoom(room.id, code), body.participantId));
+      return;
     }
+    const round = createRound(room, 'preparing_questions');
+    prepareRoundQuestions(room.id, round.id);
+    sendJson(res, 202, buildRoomState(findRoom(room.id, code), body.participantId));
     return;
   }
 
@@ -790,14 +791,8 @@ async function ensureAutoStart(room) {
   if (!fresh.autoStart || fresh.status !== 'active') return;
   const activeRound = readJson('rounds.json').some((round) => round.roomId === fresh.id && round.status === 'active');
   if (activeRound) return;
-  const round = createRound(fresh, 'starting');
-  try {
-    await createQuestionsForRound(fresh, round);
-  } catch (error) {
-    setRoundPhase(round.id, { status: 'failed', phase: 'finished' });
-    updateRoomStatus(fresh.id, 'waiting');
-    logAiError('auto-start', error.message || 'Auto start impossible');
-  }
+  const round = createRound(fresh, 'preparing_questions');
+  prepareRoundQuestions(fresh.id, round.id);
 }
 
 function sanitizeRoom(body) {
@@ -817,7 +812,7 @@ function sanitizeRoom(body) {
     creatorId: sanitizeString(body.creatorId || '').slice(0, 100),
     accessCode: sanitizeString(body.accessCode || '').slice(0, 24).toUpperCase(),
     isPublic: body.isPublic !== false,
-    status: ['waiting', 'starting', 'question_active', 'question_reveal', 'between_questions', 'closed', 'finished'].includes(body.status) ? body.status : 'waiting',
+    status: ['waiting', 'preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions', 'closed', 'finished'].includes(body.status) ? body.status : 'waiting',
     startDate: defaultStart.toISOString(),
     endDate: defaultEnd > defaultStart ? defaultEnd.toISOString() : new Date(defaultStart.getTime() + 24 * 60 * 60 * 1000).toISOString(),
     isScheduled,
@@ -864,7 +859,7 @@ function findRoom(idOrCode, code) {
 }
 
 function refreshRoomStatus(room) {
-  if (['closed', 'finished', 'starting', 'question_active', 'question_reveal', 'between_questions'].includes(room.status)) return room;
+  if (['closed', 'finished', 'preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions'].includes(room.status)) return room;
   const now = new Date();
   const startsAt = new Date(room.scheduledStartAt || room.startDate);
   const endsAt = new Date(room.scheduledEndAt || room.endDate);
@@ -912,11 +907,10 @@ function leaveRoom(roomId, participantId) {
   return participant;
 }
 
-function createRound(room, phase = 'starting') {
+function createRound(room, phase = 'preparing_questions') {
   const rounds = readJson('rounds.json');
   const roomRounds = rounds.filter((item) => item.roomId === room.id);
   const startsAt = new Date();
-  const firstQuestionAt = new Date(startsAt.getTime() + 2000);
   const round = {
     id: `round-${crypto.randomUUID()}`,
     roomId: room.id,
@@ -927,8 +921,9 @@ function createRound(room, phase = 'starting') {
     currentQuestionIndex: 0,
     questionStartedAt: null,
     questionEndsAt: null,
+    countdownEndsAt: null,
     revealUntil: null,
-    nextQuestionAt: firstQuestionAt.toISOString(),
+    nextQuestionAt: null,
     startsAt: startsAt.toISOString(),
     endsAt: new Date(startsAt.getTime() + room.roundTimeLimit * 60 * 1000).toISOString(),
     generatedByAI: room.questionSource !== 'local' && azureConfigured(),
@@ -954,12 +949,47 @@ function latestRoundForRoom(roomId) {
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
 }
 
+function prepareRoundQuestions(roomId, roundId) {
+  Promise.resolve().then(async () => {
+    const room = readJson('rooms.json').find((item) => item.id === roomId);
+    const round = readJson('rounds.json').find((item) => item.id === roundId);
+    if (!room || !round || round.phase !== 'preparing_questions' || round.status !== 'active') return;
+    try {
+      const saved = await createQuestionsForRound(room, round);
+      const validationStatus = readJson('rounds.json').find((item) => item.id === roundId)?.validationStatus || 'validated';
+      const now = Date.now();
+      setRoundPhase(roundId, {
+        phase: 'starting_countdown',
+        gameStatus: 'starting_countdown',
+        currentQuestionIndex: 0,
+        questionsReady: saved.length > 0,
+        countdownEndsAt: new Date(now + 3000).toISOString(),
+        nextQuestionAt: new Date(now + 3000).toISOString(),
+        preparationMessage: validationStatus === 'fallback_local'
+          ? 'La generation IA a echoue. Utilisation des questions locales de secours.'
+          : 'Questions pretes.'
+      });
+      updateRoomStatus(roomId, 'starting_countdown');
+    } catch (error) {
+      setRoundPhase(roundId, {
+        status: 'failed',
+        phase: 'finished',
+        gameStatus: 'game_finished',
+        preparationMessage: error.message || 'Impossible de preparer les questions.'
+      });
+      updateRoomStatus(roomId, 'waiting');
+      logAiError('prepare-round-questions', error.message || 'Preparation impossible');
+    }
+  });
+}
+
 function finishRound(roundId) {
   const rounds = readJson('rounds.json');
   const round = rounds.find((item) => item.id === roundId);
   if (!round) return null;
   round.status = 'finished';
   round.phase = 'finished';
+  round.gameStatus = 'game_finished';
   writeJson('rounds.json', rounds);
   updateRoomStatus(round.roomId, 'finished');
   return round;
@@ -989,11 +1019,18 @@ function advanceRoomState(roomId) {
     return;
   }
 
-  if (round.phase === 'starting' && now >= new Date(round.nextQuestionAt).getTime()) {
+  if (round.phase === 'preparing_questions') {
+    return;
+  }
+
+  if ((round.phase === 'starting_countdown' || round.phase === 'starting') && now >= new Date(round.countdownEndsAt || round.nextQuestionAt).getTime()) {
+    if (!questions.length) return;
     setRoundPhase(round.id, {
       phase: 'question_active',
+      gameStatus: 'question_active',
       questionStartedAt: new Date(now).toISOString(),
       questionEndsAt: new Date(now + room.questionTimeLimit * 1000).toISOString(),
+      countdownEndsAt: null,
       revealUntil: null,
       nextQuestionAt: null
     });
@@ -1005,6 +1042,7 @@ function advanceRoomState(roomId) {
     finalizeCurrentQuestion(room, round, questions);
     setRoundPhase(round.id, {
       phase: 'question_reveal',
+      gameStatus: 'question_reveal',
       revealUntil: new Date(now + 4000).toISOString(),
       nextQuestionAt: new Date(now + 5000).toISOString()
     });
@@ -1013,7 +1051,7 @@ function advanceRoomState(roomId) {
   }
 
   if (round.phase === 'question_reveal' && now >= new Date(round.revealUntil).getTime()) {
-    setRoundPhase(round.id, { phase: 'between_questions' });
+    setRoundPhase(round.id, { phase: 'between_questions', gameStatus: 'between_questions' });
     updateRoomStatus(roomId, 'between_questions');
     return;
   }
@@ -1026,9 +1064,11 @@ function advanceRoomState(roomId) {
     }
     setRoundPhase(round.id, {
       phase: 'question_active',
+      gameStatus: 'question_active',
       currentQuestionIndex: nextIndex,
       questionStartedAt: new Date(now).toISOString(),
       questionEndsAt: new Date(now + room.questionTimeLimit * 1000).toISOString(),
+      countdownEndsAt: null,
       revealUntil: null,
       nextQuestionAt: null
     });
@@ -1089,6 +1129,9 @@ async function createQuestionsForRound(room, round) {
   writeJson('roundQuestions.json', roundQuestions.concat(saved));
   recordGeneratedQuestions(saved, generated.validationStatus === 'local_selected' || generated.validationStatus === 'fallback_local' ? 'local' : 'AI');
   setRoundValidation(round.id, generated.validationStatus || 'validated');
+  if (generated.validationStatus === 'fallback_local') {
+    setRoundPhase(round.id, { preparationMessage: 'La generation IA a echoue. Utilisation des questions locales de secours.' });
+  }
   return saved;
 }
 
@@ -1484,6 +1527,12 @@ function buildRoomState(roomInput, participantId) {
     } : null,
     serverNow: new Date(now).toISOString(),
     phaseEndsAt: phaseEndsAt ? new Date(phaseEndsAt).toISOString() : null,
+    questionsReady: Boolean(round && questions.length > 0 && phase !== 'preparing_questions'),
+    countdownEndsAt: round?.countdownEndsAt || (phase === 'starting_countdown' ? round?.nextQuestionAt : null) || null,
+    questionStartedAt: round?.questionStartedAt || null,
+    questionEndsAt: round?.questionEndsAt || null,
+    currentQuestionIndex: round ? Number(round.currentQuestionIndex || 0) : 0,
+    preparationMessage: round?.preparationMessage || null,
     timeRemainingMs,
     countdownSeconds,
     score: participant?.totalScore || 0,
@@ -1502,7 +1551,7 @@ function timeRemainingForPhase(round, phase, now) {
 
 function phaseEndTimeForPhase(round, phase) {
   if (!round) return 0;
-  if (phase === 'starting' && round.nextQuestionAt) return new Date(round.nextQuestionAt).getTime();
+  if ((phase === 'starting_countdown' || phase === 'starting') && (round.countdownEndsAt || round.nextQuestionAt)) return new Date(round.countdownEndsAt || round.nextQuestionAt).getTime();
   if (phase === 'question_active' && round.questionEndsAt) return new Date(round.questionEndsAt).getTime();
   if (phase === 'question_reveal' && round.revealUntil) return new Date(round.revealUntil).getTime();
   if (phase === 'between_questions' && round.nextQuestionAt) return new Date(round.nextQuestionAt).getTime();
