@@ -31,7 +31,9 @@ for (const file of [
   'data/roundQuestions.json',
   'data/answers.json',
   'data/aiErrors.json',
-  'data/generatedQuestionsHistory.json'
+  'data/generatedQuestionsHistory.json',
+  'data/gameQuestions.json',
+  'data/playerQuestionHistory.json'
 ]) {
   JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
 }

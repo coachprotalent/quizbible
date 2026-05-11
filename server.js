@@ -133,8 +133,8 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/start-game') {
     const body = await readBody(req);
     const count = clamp(Number(body.count || 10), 5, 20);
-    const selected = selectQuestions(body.category, body.level, count);
-    sendJson(res, 200, { questions: selected.map(withoutAnswer) });
+    const game = await createStartGame(body, count);
+    sendJson(res, 200, { gameSessionId: game.gameSessionId, questions: game.questions.map(withoutAnswer) });
     return;
   }
 
@@ -152,8 +152,12 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/submit-game') {
     const body = await readBody(req);
     const result = scoreGame(body);
-    appendJson('sessions.json', result.session);
-    appendJson('leaderboard.json', result.leaderboard);
+    const alreadyCounted = body.gameSessionId && readJson('leaderboard.json').some((row) => row.gameSessionId === body.gameSessionId);
+    if (!alreadyCounted) {
+      appendJson('sessions.json', result.session);
+      appendJson('leaderboard.json', result.leaderboard);
+    }
+    result.duplicateSubmission = Boolean(alreadyCounted);
     sendJson(res, 200, result);
     return;
   }
@@ -1088,6 +1092,42 @@ async function createQuestionsForRound(room, round) {
   return saved;
 }
 
+async function createStartGame(body, count) {
+  const category = validId(body.category, categories, 'random');
+  const level = normalizeLevelId(body.level);
+  const playerName = sanitizeString(body.playerName || 'Anonyme').slice(0, 40) || 'Anonyme';
+  const clientRecentQuestions = Array.isArray(body.recentQuestions)
+    ? body.recentQuestions.map((item) => typeof item === 'string' ? { question: item } : item).slice(-50)
+    : [];
+  const recentQuestions = clientRecentQuestions.concat(recentPlayerQuestionHistory(playerName, level, 60));
+  const gameSessionId = `game-${crypto.randomUUID()}`;
+  const generated = await generateRoundQuestions({
+    gameSessionId,
+    category,
+    difficulty: level,
+    level,
+    count,
+    questionTypes: ['qcm', 'vrai_faux', 'personnage', 'livre_biblique', 'completer_verset', 'qui_suis_je', 'contexte_historique'],
+    questionSource: 'ai',
+    challengeType: 'progression_commencer',
+    participantLevel: level,
+    recentQuestions
+  });
+  const saved = generated.questions.map((question, index) => sanitizeRoundQuestion({
+    ...question,
+    id: `gq-${crypto.randomUUID()}`,
+    roundId: gameSessionId,
+    category: question.category || category,
+    difficulty: question.difficulty || question.level || level,
+    level: question.level || question.difficulty || level,
+    order: index + 1
+  }));
+  appendStartGameQuestions(gameSessionId, playerName, saved);
+  recordGeneratedQuestions(saved, generated.validationStatus === 'fallback_local' ? 'local' : 'AI');
+  recordPlayerQuestionHistory(playerName, category, level, saved);
+  return { gameSessionId, questions: saved };
+}
+
 async function generateRoundQuestions(input) {
   const count = clamp(Number(input.count || 10), 1, 20);
   if (input.questionSource === 'local') {
@@ -1126,7 +1166,7 @@ async function generateRoundQuestions(input) {
   }
   logAiError('generate-round-questions', lastError || 'Generation incomplete');
   return {
-    questions: selectQuestions(input.category, input.difficulty || input.level, count).map((question) => ({
+    questions: selectQuestions(input.category, input.difficulty || input.level, count, { avoidQuestions: input.recentQuestions || [] }).map((question) => ({
       ...question,
       difficulty: question.level,
       aiValidationStatus: 'fallback_local',
@@ -1144,9 +1184,57 @@ function selectBankQuestions(bankId, count) {
   return shuffle(questions).slice(0, count);
 }
 
+function appendStartGameQuestions(gameSessionId, playerName, questions) {
+  const all = readJson('gameQuestions.json')
+    .filter((item) => Date.now() - new Date(item.createdAt || 0).getTime() < 7 * 24 * 60 * 60 * 1000);
+  const createdAt = new Date().toISOString();
+  writeJson('gameQuestions.json', all.concat(questions.map((question) => ({
+    ...question,
+    gameSessionId,
+    playerName,
+    createdAt
+  }))));
+}
+
+function recentPlayerQuestionHistory(playerName, level, limit = 50) {
+  const key = playerHistoryKey(playerName);
+  const levelRank = difficultyRank(normalizeLevelId(level));
+  return readJson('playerQuestionHistory.json')
+    .filter((item) => item.playerKey === key && Math.abs(difficultyRank(normalizeLevelId(item.level)) - levelRank) <= 1)
+    .sort((a, b) => new Date(b.playedAt) - new Date(a.playedAt))
+    .slice(0, limit)
+    .map((item) => ({ question: item.question, correctAnswer: item.correctAnswer, level: item.level }));
+}
+
+function recordPlayerQuestionHistory(playerName, category, level, questions) {
+  const key = playerHistoryKey(playerName);
+  const kept = readJson('playerQuestionHistory.json')
+    .filter((item) => item.playerKey !== key)
+    .concat(readJson('playerQuestionHistory.json')
+      .filter((item) => item.playerKey === key)
+      .sort((a, b) => new Date(b.playedAt) - new Date(a.playedAt))
+      .slice(0, 80));
+  const playedAt = new Date().toISOString();
+  const additions = questions.map((question) => ({
+    id: `pqh-${crypto.randomUUID()}`,
+    playerKey: key,
+    category,
+    level,
+    questionId: question.id,
+    question: sanitizeString(question.question).slice(0, 500),
+    correctAnswer: sanitizeString(question.correctAnswer || '').slice(0, 180),
+    playedAt
+  }));
+  writeJson('playerQuestionHistory.json', kept.concat(additions).slice(-5000));
+}
+
+function playerHistoryKey(playerName) {
+  return crypto.createHash('sha256').update(`player:${normalize(playerName || 'Anonyme')}`).digest('hex');
+}
+
 async function generateCompetitionQuestions(input, count) {
   if (!azureConfigured()) {
-    return selectQuestions(input.category, input.difficulty || input.level, count).map((question) => ({
+    return selectQuestions(input.category, input.difficulty || input.level, count, { avoidQuestions: input.recentQuestions || [] }).map((question) => ({
       ...question,
       difficulty: question.level,
       justification: 'Fallback local'
@@ -1176,8 +1264,11 @@ async function generateCompetitionQuestions(input, count) {
           'rejeter les textes quasi identiques',
           'eviter meme reponse et meme structure',
           'eviter une variation trop faible d une question recente',
-          'eviter trop de questions sur le meme personnage ou le meme livre'
+          'eviter trop de questions sur le meme personnage ou le meme livre',
+          'ne pas generer de questions identiques ou quasi identiques aux niveaux precedents',
+          'adapter fortement la profondeur au niveau demande'
         ],
+        difficultySeparation: difficultySeparationRules(input.difficulty || input.level),
         rotationTopics,
         output: {
           questions: [{
@@ -1587,25 +1678,84 @@ function isScholarLevel(level) {
   return normalize(level) === 'scholar';
 }
 
+function normalizeLevelId(level) {
+  const value = normalize(level || '');
+  if (['debutant', 'debutants', 'beginner'].includes(value)) return 'debutant';
+  if (['intermediaire', 'intermediate'].includes(value)) return 'intermediaire';
+  if (['avance', 'advanced'].includes(value)) return 'avance';
+  if (value === 'expert') return 'expert';
+  if (value === 'scholar') return 'scholar';
+  return 'debutant';
+}
+
+function difficultyRank(level) {
+  return { debutant: 1, intermediaire: 2, avance: 3, expert: 4, scholar: 5 }[normalizeLevelId(level)] || 1;
+}
+
 function difficultyGuidance(level) {
-  if (!isScholarLevel(level)) return 'Adapter la profondeur au niveau demande sans ambiguites.';
+  const normalized = normalizeLevelId(level);
+  const guidance = {
+    debutant: {
+      label: 'Debutant',
+      depth: 'questions simples et directes',
+      include: ['personnages tres connus', 'evenements majeurs', 'recits fondateurs', 'vocabulaire courant'],
+      avoid: ['pieges subtils', 'contexte historique avance', 'symboles prophetiques complexes']
+    },
+    intermediaire: {
+      label: 'Intermediaire',
+      depth: 'details supplementaires, livres bibliques et chronologie simple',
+      include: ['livres', 'ordre general des evenements', 'details visibles du texte', 'personnages secondaires connus'],
+      avoid: ['questions trop evidentes de niveau debutant', 'analyses historiques specialisees']
+    },
+    avance: {
+      label: 'Avance',
+      depth: 'liens entre passages, contexte litteraire et details moins connus',
+      include: ['paralleles entre textes', 'contexte d un passage', 'details moins memorises', 'themes bibliques transversaux'],
+      avoid: ['questions de simple reconnaissance', 'pieges purement triviaux']
+    },
+    expert: {
+      label: 'Expert',
+      depth: 'propheties, geographie, symboles et analyse biblique poussee',
+      include: ['symboles', 'geographie biblique', 'propheties', 'comparaison de passages', 'allusions textuelles'],
+      avoid: ['questions trop simples', 'personnages connus sans angle analytique', 'memes questions que debutant/intermediaire']
+    },
+    scholar: {
+      label: 'Scholar',
+      depth: 'Bible d etude, chronologie avancee, histoire et culture antique',
+      audience: 'etudiants serieux de la Bible, Bibles d etude, contexte historique, culture hebraique et greco-romaine, theologie introductive',
+      include: scholarTopics,
+      avoid: [
+        'doctrines controversees',
+        'debats confessionnels',
+        'fausses informations historiques',
+        'speculation presentee comme certitude',
+        'questions ambigues',
+        'questions qui pourraient convenir a debutant ou intermediaire'
+      ],
+      requiredFields: [
+        'reponse',
+        'explication',
+        'reference biblique',
+        'note historique separee quand utile'
+      ]
+    }
+  };
+  return guidance[normalized];
+}
+
+function difficultySeparationRules(level) {
+  const normalized = normalizeLevelId(level);
   return {
-    label: 'Scholar',
-    audience: 'etudiants serieux de la Bible, Bibles d etude, contexte historique, culture hebraique et greco-romaine, theologie introductive',
-    include: scholarTopics,
-    avoid: [
-      'doctrines controversees',
-      'debats confessionnels',
-      'fausses informations historiques',
-      'speculation presentee comme certitude',
-      'questions ambigues'
-    ],
-    requiredFields: [
-      'reponse',
-      'explication',
-      'reference biblique',
-      'note historique separee quand utile'
-    ]
+    requestedLevel: normalized,
+    rule: 'Utilise un pool mental distinct pour ce niveau. Une question debutant ne doit presque jamais apparaitre en expert; une question expert ne doit pas apparaitre en debutant.',
+    beginner: 'personnages connus, evenements majeurs, consignes simples',
+    intermediate: 'details supplementaires, livres, chronologie simple',
+    advanced: 'liens entre passages, contexte, details moins connus',
+    expert: 'propheties, geographie, symboles, analyse plus poussee',
+    scholar: 'contexte historique, empires, culture antique, Bible d etude, chronologie avancee',
+    strictness: ['expert', 'scholar'].includes(normalized)
+      ? 'Interdire les questions trop simples et les reformulations des niveaux precedents.'
+      : 'Rester adapte au niveau sans importer des questions des niveaux superieurs.'
   };
 }
 
@@ -1734,15 +1884,114 @@ function readBody(req) {
   });
 }
 
-function selectQuestions(category, level, count) {
+function selectQuestions(category, level, count, options = {}) {
+  const normalizedLevel = normalizeLevelId(level);
+  const avoidQuestions = Array.isArray(options.avoidQuestions) ? options.avoidQuestions : [];
+  const exactAvoidTexts = new Set(avoidQuestions.map((question) => normalizedQuestionText(question.question || question.rawQuestion || question.normalizedQuestion || question)).filter(Boolean));
   const questions = readJson('questions.json').filter((q) => q.isActive !== false);
   const filtered = questions.filter((q) => {
     const categoryOk = !category || category === 'random' || q.category === category || broadCategoryMatch(category, q.category);
-    const levelOk = !level || q.level === level;
+    const levelOk = normalizeLevelId(q.level) === normalizedLevel;
     return categoryOk && levelOk;
   });
-  const pool = filtered.length >= count ? filtered : questions;
-  return shuffle(pool).slice(0, count);
+  const sameLevel = questions.filter((q) => normalizeLevelId(q.level) === normalizedLevel);
+  const localFallback = localDifficultyFallbackQuestions(normalizedLevel, category);
+  const selected = [];
+  for (const pool of [filtered, sameLevel, localFallback]) {
+    for (const question of shuffle(pool)) {
+      if (selected.length >= count) break;
+      if (selected.some((item) => isDuplicateQuestion(question, [item]))) continue;
+      if (exactAvoidTexts.has(normalizedQuestionText(question.question))) continue;
+      if (avoidQuestions.length && isDuplicateQuestion(question, avoidQuestions)) continue;
+      selected.push(question);
+    }
+  }
+  if (selected.length < count) {
+    for (const question of shuffle(localFallback.concat(sameLevel))) {
+      if (selected.length >= count) break;
+      if (exactAvoidTexts.has(normalizedQuestionText(question.question))) continue;
+      if (!selected.some((item) => item.id === question.id)) selected.push(question);
+    }
+  }
+  return selected.slice(0, count);
+}
+
+function localDifficultyFallbackQuestions(level, category) {
+  const normalizedLevel = normalizeLevelId(level);
+  const pools = {
+    debutant: [
+      ['Qui a construit l arche avant le deluge ?', ['Noe', 'Moise', 'David', 'Jonas'], 'Noe', 'Noe construit l arche selon l ordre de Dieu.', 'Genese 6'],
+      ['Qui a ete jete dans la fosse aux lions ?', ['Daniel', 'Joseph', 'Elie', 'Pierre'], 'Daniel', 'Daniel est preserve dans la fosse aux lions.', 'Daniel 6'],
+      ['Dans quel jardin Adam et Eve sont-ils places ?', ['Eden', 'Gethsemane', 'Carmel', 'Sinai'], 'Eden', 'Le recit de la creation place Adam et Eve dans le jardin d Eden.', 'Genese 2'],
+      ['Qui est la mere de Jesus ?', ['Marie', 'Marthe', 'Ruth', 'Debora'], 'Marie', 'Les evangiles presentent Marie comme la mere de Jesus.', 'Luc 1-2'],
+      ['Jesus nourrit une foule avec cinq pains et deux poissons.', ['Vrai', 'Faux'], 'Vrai', 'Les evangiles rapportent ce miracle de multiplication.', 'Marc 6:30-44'],
+      ['Qui a recu les dix commandements au Sinai ?', ['Moise', 'Samuel', 'Esdras', 'Timothee'], 'Moise', 'Moise recoit la loi pour Israel au Sinai.', 'Exode 20'],
+      ['Qui a ete avale par un grand poisson ?', ['Jonas', 'Elisee', 'Etienne', 'Barnabas'], 'Jonas', 'Le livre de Jonas rapporte cet episode pendant sa fuite.', 'Jonas 1-2'],
+      ['Quel est le premier livre de la Bible ?', ['Genese', 'Exode', 'Matthieu', 'Psaumes'], 'Genese', 'La Genese ouvre le recit biblique avec la creation.', 'Genese 1'],
+      ['Jesus est ne a Bethleem.', ['Vrai', 'Faux'], 'Vrai', 'Les evangiles situent la naissance de Jesus a Bethleem.', 'Matthieu 2:1; Luc 2:4-7'],
+      ['Qui a interprete des songes en Egypte avant de devenir responsable du pays ?', ['Joseph', 'Gedeon', 'Esau', 'Nathanael'], 'Joseph', 'Joseph interprete les songes de Pharaon et recoit une responsabilite en Egypte.', 'Genese 41']
+    ],
+    intermediaire: [
+      ['Quel livre raconte principalement la sortie d Egypte ?', ['Exode', 'Juges', 'Ruth', 'Esther'], 'Exode', 'L Exode raconte la liberation d Israel et le depart d Egypte.', 'Exode 1-15'],
+      ['Quel roi a demande la sagesse a Dieu ?', ['Salomon', 'Saul', 'Achab', 'Ezias'], 'Salomon', 'Salomon demande un coeur intelligent pour gouverner.', '1 Rois 3'],
+      ['Dans quel livre trouve-t-on la reconstruction des murailles de Jerusalem ?', ['Nehemie', 'Josue', 'Job', 'Osee'], 'Nehemie', 'Nehemie conduit la reconstruction des murailles de Jerusalem.', 'Nehemie 1-6'],
+      ['Quel evangile insiste sur les voyages missionnaires apres la resurrection dans son second volume, les Actes ?', ['Luc', 'Marc', 'Matthieu', 'Jean'], 'Luc', 'Luc est associe a l evangile de Luc et au livre des Actes.', 'Luc 1:1-4; Actes 1:1'],
+      ['La Pentecote d Actes 2 a lieu apres l ascension de Jesus.', ['Vrai', 'Faux'], 'Vrai', 'Actes situe la Pentecote apres l ascension et l attente des disciples.', 'Actes 1-2'],
+      ['Quel livre raconte l histoire de Ruth et de Booz ?', ['Ruth', 'Esther', 'Juges', 'Cantique'], 'Ruth', 'Le livre de Ruth raconte cette histoire dans le cadre familial de Naomi.', 'Ruth 1-4'],
+      ['Quel prophete confronte les prophetes de Baal au mont Carmel ?', ['Elie', 'Jeremie', 'Habacuc', 'Aggee'], 'Elie', 'Elie affronte les prophetes de Baal dans le recit du Carmel.', '1 Rois 18'],
+      ['Dans Actes, quel apotre preche a la Pentecote ?', ['Pierre', 'Thomas', 'Jacques fils d Alphee', 'Nicolas'], 'Pierre', 'Pierre explique aux foules le sens de ce qui arrive a la Pentecote.', 'Actes 2'],
+      ['Le livre d Esther mentionne directement le nom de Dieu dans chaque chapitre.', ['Vrai', 'Faux'], 'Faux', 'Esther est connu pour ne pas mentionner explicitement le nom de Dieu.', 'Esther'],
+      ['Quel livre contient le recit de la vocation d Esaie au temple ?', ['Esaie', 'Ezechiel', 'Amos', 'Malachie'], 'Esaie', 'Esaie 6 rapporte la vision et l appel du prophete.', 'Esaie 6']
+    ],
+    avance: [
+      ['Quel theme relie l agneau pascal de l Exode et la presentation de Jesus dans le Nouveau Testament ?', ['La delivrance par le sacrifice', 'La conquete militaire', 'La royaute de Salomon', 'La construction du temple'], 'La delivrance par le sacrifice', 'Le Nouveau Testament emploie l image de l agneau pour parler de l oeuvre de Christ.', 'Exode 12; Jean 1:29'],
+      ['Dans 1 Samuel, quel contraste structure souvent la comparaison entre Saul et David ?', ['Apparence exterieure et coeur', 'Richesse et pauvrete', 'Age et genealogie', 'Langue et territoire'], 'Apparence exterieure et coeur', 'Le recit souligne que Dieu regarde au coeur et non seulement a l apparence.', '1 Samuel 16:7'],
+      ['Quel detail rend le retour d exil plus complexe qu une simple victoire politique ?', ['La restauration spirituelle reste incomplete', 'Babylone disparait immediatement', 'Tous les peuples rejoignent Juda', 'Le temple n est jamais reconstruit'], 'La restauration spirituelle reste incomplete', 'Esdras et Nehemie montrent une restauration reelle mais accompagnee de tensions spirituelles.', 'Esdras 9-10; Nehemie 13'],
+      ['Dans les evangiles, les citations d Esaie servent souvent a montrer quoi ?', ['L accomplissement et le sens de la mission de Jesus', 'La fin de toute lecture prophetique', 'La superiorite de Rome', 'La genealogie de Moise'], 'L accomplissement et le sens de la mission de Jesus', 'Les evangiles utilisent Esaie pour interpreter l identite et la mission de Jesus.', 'Esaie 40; Marc 1:2-3'],
+      ['Les paraboles doivent etre lues en tenant compte du contexte narratif ou Jesus les prononce.', ['Vrai', 'Faux'], 'Vrai', 'Le contexte aide a identifier l enjeu principal d une parabole.', 'Luc 15'],
+      ['Quel lien unit Melchisedek et l argumentation de l epitre aux Hebreux ?', ['Un sacerdoce distinct de celui de Levi', 'La construction de l arche', 'La prise de Jericho', 'La chute de Samarie'], 'Un sacerdoce distinct de celui de Levi', 'Hebreux utilise Melchisedek pour expliquer le sacerdoce du Christ.', 'Genese 14; Hebreux 7'],
+      ['Pourquoi le livre des Juges repete-t-il des cycles de chute et de delivrance ?', ['Pour montrer l instabilite spirituelle d Israel', 'Pour lister les rois de Juda', 'Pour dater les empires grecs', 'Pour expliquer la genealogie de Paul'], 'Pour montrer l instabilite spirituelle d Israel', 'Les cycles soulignent l infidelite, l oppression, le cri et la delivrance.', 'Juges 2'],
+      ['Quel passage associe explicitement une nouvelle alliance a une transformation interieure ?', ['Jeremie 31', 'Josue 6', '1 Samuel 8', 'Jonas 4'], 'Jeremie 31', 'Jeremie annonce une alliance ecrite dans le coeur.', 'Jeremie 31:31-34'],
+      ['Dans Marc, le secret messianique invite a suivre la progression narrative de l identite de Jesus.', ['Vrai', 'Faux'], 'Vrai', 'Marc developpe progressivement la revelation de l identite et de la mission de Jesus.', 'Marc 8-10'],
+      ['Quel contraste majeur apparait entre Babel et la Pentecote ?', ['Confusion dispersee et annonce comprise par plusieurs peuples', 'Royaute de David et exil perse', 'Sabbat et jubile', 'Temple et synagogue'], 'Confusion dispersee et annonce comprise par plusieurs peuples', 'Babel disperse par confusion, tandis qu Actes 2 montre une annonce comprise par des peuples divers.', 'Genese 11; Actes 2']
+    ],
+    expert: [
+      ['Dans Daniel 7, quel element montre que la vision depasse une simple liste de royaumes ?', ['La scene du tribunal celeste', 'La mention d une ville portuaire', 'La genealogie d Abraham', 'Le recensement de David'], 'La scene du tribunal celeste', 'La vision articule symboles politiques et jugement divin dans une scene celeste.', 'Daniel 7:9-14'],
+      ['Quel lien thematique unit l exil, le reste fidele et l esperance prophetique ?', ['Le jugement suivi d une restauration promise', 'La disparition de l alliance', 'La fin du culte dans tout le Proche-Orient', 'La victoire definitive de l Assyrie'], 'Le jugement suivi d une restauration promise', 'Les prophetes articulent souvent jugement, reste et restauration.', 'Esaie 10; Jeremie 31'],
+      ['Pourquoi la geographie de Samarie est-elle importante dans Jean 4 ?', ['Elle met en jeu une frontiere religieuse et sociale', 'Elle prouve que Jesus evite tout dialogue', 'Elle situe le temple de Salomon', 'Elle decrit la route de l exode'], 'Elle met en jeu une frontiere religieuse et sociale', 'Le dialogue avec la Samaritaine prend sens dans les tensions entre Juifs et Samaritains.', 'Jean 4'],
+      ['Dans Zacharie, les visions symboliques demandent souvent de distinguer quoi ?', ['Image visionnaire et message prophetique', 'Proverbe et genealogie', 'Loi civile et recit de creation', 'Psaume royal et liste tribale'], 'Image visionnaire et message prophetique', 'Les visions utilisent des images qui servent un message de restauration et de jugement.', 'Zacharie 1-6'],
+      ['Une question expert peut demander de comparer un symbole entre plusieurs passages bibliques.', ['Vrai', 'Faux'], 'Vrai', 'Le niveau expert mobilise les liens entre textes, symboles et contexte.', 'Daniel 7; Apocalypse 13'],
+      ['Dans Apocalypse, pourquoi les images de betes demandent-elles souvent une lecture intertextuelle ?', ['Elles reprennent des motifs de Daniel', 'Elles remplacent les evangiles', 'Elles datent la creation', 'Elles nomment tous les apotres'], 'Elles reprennent des motifs de Daniel', 'Plusieurs images de l Apocalypse dialoguent avec Daniel et d autres textes prophetique.', 'Daniel 7; Apocalypse 13'],
+      ['Quel enjeu theologique traverse le recit de 1 Rois 12 ?', ['Division du royaume et culte concurrent', 'Naissance de Moise', 'Retour de Paul a Tarse', 'Institution de la Paque en Egypte'], 'Division du royaume et culte concurrent', 'La division politique s accompagne d un enjeu cultuel autour des sanctuaires du Nord.', '1 Rois 12'],
+      ['Pourquoi la mention de Cyrus est-elle importante pour lire Esdras 1 ?', ['Elle situe le retour dans la politique perse', 'Elle annonce la domination romaine', 'Elle identifie un juge d Israel', 'Elle nomme un disciple de Jesus'], 'Elle situe le retour dans la politique perse', 'Le decret de Cyrus ouvre le cadre historique du retour d exil.', 'Esdras 1'],
+      ['Comparer Romains 4 et Genese 15 aide a comprendre l argument de Paul sur la foi.', ['Vrai', 'Faux'], 'Vrai', 'Paul s appuie sur Abraham pour developper son argument sur la justice par la foi.', 'Genese 15:6; Romains 4'],
+      ['Quel symbole d Ezechiel 37 articule restauration nationale et action de l Esprit ?', ['Les ossements desseches', 'La manne', 'Le buisson ardent', 'La barque de Jonas'], 'Les ossements desseches', 'La vision utilise l image des ossements revivifies pour annoncer restauration et souffle divin.', 'Ezechiel 37']
+    ],
+    scholar: [
+      ['Quel empire constitue l arriere-plan majeur de la chute du royaume du Nord en 722 av. J.-C. ?', ['Assyrie', 'Perse', 'Rome', 'Egypte ptolemaique'], 'Assyrie', 'La chute de Samarie est rattachee historiquement a l expansion assyrienne.', '2 Rois 17'],
+      ['Dans le contexte perse, quel enjeu historique eclaire les retours d exil ?', ['Les politiques imperiales de rapatriement et de restauration locale', 'La citoyennete romaine', 'La domination seleucide directe', 'Les croisades medievales'], 'Les politiques imperiales de rapatriement et de restauration locale', 'Les retours d exil s inscrivent dans le cadre de l empire perse et de ses decrets.', 'Esdras 1'],
+      ['Quel arriere-plan culturel aide a comprendre l importance des repas dans Luc ?', ['Les codes d honneur, d hospitalite et de reciprocite', 'Les jeux du cirque', 'La monnaie byzantine', 'Les guildes medievales'], 'Les codes d honneur, d hospitalite et de reciprocite', 'Les scenes de repas dans Luc gagnent en relief avec les pratiques sociales mediterraneennes antiques.', 'Luc 14'],
+      ['Pourquoi les Diadoques sont-ils utiles pour situer certaines lectures historiques de Daniel ?', ['Ils expliquent la division de l empire d Alexandre', 'Ils sont les douze fils de Jacob', 'Ils fondent le royaume de Juda', 'Ils ecrivent les Psaumes'], 'Ils expliquent la division de l empire d Alexandre', 'Les Bibles d etude relient souvent Daniel 8 et 11 au monde hellenistique apres Alexandre.', 'Daniel 8; Daniel 11'],
+      ['En niveau Scholar, une note historique doit etre distinguee du texte biblique direct.', ['Vrai', 'Faux'], 'Vrai', 'Le contexte historique peut eclairer le texte sans etre presente comme une citation biblique directe.', 'Principe d etude biblique'],
+      ['Quel contexte imperial eclaire la tension entre royaume de Dieu et titres politiques dans le Nouveau Testament ?', ['Le monde romain', 'Le royaume hittite', 'La monarchie carolingienne', 'La Perse sassanide'], 'Le monde romain', 'Le langage royal du Nouveau Testament se deploie dans un monde marque par l autorite romaine.', 'Luc 2; Jean 19'],
+      ['Pourquoi Qumran est-il parfois cite dans les Bibles d etude ?', ['Pour situer certains courants juifs du Second Temple', 'Pour remplacer le texte biblique', 'Pour dater Abraham', 'Pour expliquer la chute de Ninive'], 'Pour situer certains courants juifs du Second Temple', 'Qumran aide a comprendre un arriere-plan juif ancien sans devenir la source normative du texte biblique.', 'Contexte du Second Temple'],
+      ['Quel empire domine Juda au moment ou Nehemie obtient l autorisation de reconstruire ?', ['Perse', 'Assyrie', 'Rome', 'Babylone ancienne'], 'Perse', 'Nehemie sert a la cour perse avant son depart pour Jerusalem.', 'Nehemie 1-2'],
+      ['Dans l etude de Daniel 11, distinguer texte, symbole et rapprochement historique evite de presenter une interpretation comme une certitude absolue.', ['Vrai', 'Faux'], 'Vrai', 'Le niveau Scholar doit separer le texte biblique des identifications historiques proposees par les commentateurs.', 'Daniel 11'],
+      ['Quel arriere-plan aide a comprendre les collectes de Paul pour Jerusalem ?', ['Les solidarites entre eglises et la situation economique de saints de Jerusalem', 'Le culte imperial obligatoire dans le temple', 'Le retour de l exil sous Cyrus', 'La construction du tabernacle'], 'Les solidarites entre eglises et la situation economique de saints de Jerusalem', 'Paul presente la collecte comme un service concret entre croyants issus de differents milieux.', '2 Corinthiens 8-9; Romains 15:25-27']
+    ]
+  };
+  return pools[normalizedLevel].map((item, index) => sanitizeQuestion({
+    id: `fallback-${normalizedLevel}-${index + 1}`,
+    question: item[0],
+    type: item[1].length === 2 ? 'vrai_faux' : 'qcm',
+    options: item[1],
+    correctAnswer: item[2],
+    explanation: item[3],
+    reference: item[4],
+    category: category && category !== 'random' ? category : 'contexte_historique',
+    level: normalizedLevel,
+    isActive: true
+  }));
 }
 
 function groupedLeaderboard() {
@@ -1825,10 +2074,19 @@ function withoutAnswer(question) {
 
 function scoreGame(body) {
   const answers = Array.isArray(body.answers) ? body.answers : [];
-  const questions = readJson('questions.json');
+  const gameSessionId = sanitizeString(body.gameSessionId || '').slice(0, 100);
+  const sessionQuestions = gameSessionId
+    ? readJson('gameQuestions.json').filter((question) => question.gameSessionId === gameSessionId || question.roundId === gameSessionId)
+    : [];
+  const questions = sessionQuestions.length ? sessionQuestions : readJson('questions.json');
+  const seenQuestionIds = new Set();
   let score = 0;
   let correctAnswers = 0;
-  const review = answers.map((answer) => {
+  const review = answers.filter((answer) => {
+    if (!answer?.questionId || seenQuestionIds.has(answer.questionId)) return false;
+    seenQuestionIds.add(answer.questionId);
+    return true;
+  }).map((answer) => {
     const question = questions.find((q) => q.id === answer.questionId);
     if (!question) return null;
     const isCorrect = normalize(answer.answer) === normalize(question.correctAnswer);
@@ -1863,6 +2121,7 @@ function scoreGame(body) {
   const level = sanitizeString(body.level || 'debutant');
   const session = {
     id: `gs-${crypto.randomUUID()}`,
+    gameSessionId,
     playerName,
     category: sanitizeString(body.category || 'random'),
     level,
@@ -1881,6 +2140,7 @@ function scoreGame(body) {
     session,
     leaderboard: {
       id: `lb-${crypto.randomUUID()}`,
+      gameSessionId,
       playerName,
       score,
       pointsObtenus: score,
@@ -1902,7 +2162,11 @@ function scoreGame(body) {
 }
 
 function checkSingleAnswer(body) {
-  const question = readJson('questions.json').find((q) => q.id === body.questionId);
+  const gameSessionId = sanitizeString(body.gameSessionId || '').slice(0, 100);
+  const gameQuestion = gameSessionId
+    ? readJson('gameQuestions.json').find((q) => (q.gameSessionId === gameSessionId || q.roundId === gameSessionId) && q.id === body.questionId)
+    : null;
+  const question = gameQuestion || readJson('questions.json').find((q) => q.id === body.questionId);
   if (!question) return null;
   const isCorrect = normalize(body.answer) === normalize(question.correctAnswer);
   const timeLeft = Number(body.timeLeft || 0);
@@ -1923,14 +2187,14 @@ function checkSingleAnswer(body) {
 
 async function generateQuestions(input) {
   const category = validId(input.category, categories, 'random');
-  const level = validId(input.level, levels, 'debutant');
+  const level = validId(normalizeLevelId(input.level), levels, 'debutant');
   const count = clamp(Number(input.count || 10), 1, 20);
   const requestedTypes = Array.isArray(input.questionTypes) && input.questionTypes.length
     ? input.questionTypes.filter((type) => questionTypes.includes(type))
     : ['qcm', 'vrai_faux', 'personnage'];
 
   if (!azureConfigured()) {
-    const fallback = selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+    const fallback = selectQuestions(category, level, count, { avoidQuestions: input.recentQuestions || [] }).map((q) => ({ ...q, source: 'fallback_local' }));
     recordGeneratedQuestions(fallback, 'local');
     return fallback;
   }
@@ -1939,6 +2203,7 @@ async function generateQuestions(input) {
     category,
     level,
     difficultyGuidance: difficultyGuidance(level),
+    difficultySeparation: difficultySeparationRules(level),
     count,
     questionTypes: requestedTypes,
     theme: sanitizeString(input.theme || '').slice(0, 200),
@@ -1951,6 +2216,8 @@ async function generateQuestions(input) {
       rules: [
         'ne pas reutiliser une question deja generee',
         'ne pas reformuler legerement une ancienne question',
+        'ne pas generer de questions identiques ou quasi identiques aux niveaux precedents',
+        'adapter fortement la profondeur au niveau demande',
         'varier personnages, livres, empires, lieux et themes',
         'eviter meme reponse avec meme structure'
       ],
@@ -2021,13 +2288,13 @@ async function generateQuestions(input) {
     category: q.category || category,
     isActive: true,
     createdAt: new Date().toISOString()
-  })).filter((question) => validateQuestion(question) && !isDuplicateQuestion(question));
+  })).filter((question) => validateQuestion(question) && !isDuplicateQuestion(question, input.recentQuestions || []));
   if (valid.length) {
     const selected = valid.slice(0, count);
     recordGeneratedQuestions(selected, 'AI');
     return selected;
   }
-  const fallback = selectQuestions(category, level, count).map((q) => ({ ...q, source: 'fallback_local' }));
+  const fallback = selectQuestions(category, level, count, { avoidQuestions: input.recentQuestions || [] }).map((q) => ({ ...q, source: 'fallback_local' }));
   recordGeneratedQuestions(fallback, 'local');
   return fallback;
 }

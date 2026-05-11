@@ -10,7 +10,8 @@ const state = {
   playerName: 'Anonyme',
   category: 'random',
   level: 'debutant',
-  remaining: 30
+  remaining: 30,
+  gameSessionId: ''
 };
 
 const competition = {
@@ -210,6 +211,47 @@ function stepNumberInput(event) {
   input.value = Math.max(min, Math.min(max, next));
 }
 
+function recentLocalQuestionHistory(playerName, level) {
+  try {
+    const key = localHistoryKey(playerName);
+    const all = JSON.parse(localStorage.getItem('qb_recent_questions') || '[]');
+    return all
+      .filter((item) => item.playerKey === key && Math.abs(levelRank(item.level) - levelRank(level)) <= 1)
+      .slice(-50)
+      .map((item) => ({ question: item.question, correctAnswer: item.correctAnswer, level: item.level }));
+  } catch {
+    return [];
+  }
+}
+
+function recordLocalQuestionHistory(playerName, level, questions) {
+  try {
+    const key = localHistoryKey(playerName);
+    const existing = JSON.parse(localStorage.getItem('qb_recent_questions') || '[]')
+      .filter((item) => item.playerKey !== key)
+      .concat(JSON.parse(localStorage.getItem('qb_recent_questions') || '[]').filter((item) => item.playerKey === key).slice(-80));
+    const additions = questions.map((question) => ({
+      playerKey: key,
+      level,
+      question: question.question,
+      correctAnswer: question.correctAnswer || '',
+      playedAt: new Date().toISOString()
+    }));
+    localStorage.setItem('qb_recent_questions', JSON.stringify(existing.concat(additions).slice(-500)));
+  } catch {
+    // Local history is an optimization; server-side history still protects the session.
+  }
+}
+
+function localHistoryKey(playerName) {
+  return String(playerName || 'Anonyme').trim().toLowerCase() || 'anonyme';
+}
+
+function levelRank(level) {
+  const normalized = String(level || '').toLowerCase();
+  return { debutant: 1, beginner: 1, intermediaire: 2, intermediate: 2, avance: 3, advanced: 3, expert: 4, scholar: 5 }[normalized] || 1;
+}
+
 async function startGame(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -226,9 +268,12 @@ async function startGame(event) {
     body: {
       category: state.category,
       level: state.level,
-      count: Number(form.get('count'))
+      count: Number(form.get('count')),
+      playerName: state.playerName,
+      recentQuestions: recentLocalQuestionHistory(state.playerName, state.level)
     }
   });
+  state.gameSessionId = response.gameSessionId || '';
   state.questions = response.questions;
   setGameImmersive(true);
   window.scrollTo({ top: 0, left: 0 });
@@ -280,12 +325,13 @@ async function answerQuestion(answer) {
     method: 'POST',
     body: {
       questionId: question.id,
+      gameSessionId: state.gameSessionId,
       answer,
       timeLeft: state.remaining,
       timeLimit: state.timeLimit
     }
   });
-  state.answers.push({ questionId: question.id, answer, timeLeft: state.remaining, timeLimit: state.timeLimit });
+  state.answers.push({ questionId: question.id, gameSessionId: state.gameSessionId, answer, timeLeft: state.remaining, timeLimit: state.timeLimit });
   state.score += review.points;
   $('#score').textContent = `${state.score} pts`;
   $$('.answer').forEach((button) => {
@@ -320,9 +366,11 @@ async function finishGame() {
       level: state.level,
       timeLimit: state.timeLimit,
       duration: Math.round((Date.now() - state.startedAt) / 1000),
+      gameSessionId: state.gameSessionId,
       answers: state.answers
     }
   });
+  recordLocalQuestionHistory(state.playerName, state.level, state.questions);
   $('#gameBoard').classList.add('hidden');
   $('#results').classList.remove('hidden');
   $('#results').innerHTML = `
