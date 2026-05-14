@@ -90,6 +90,10 @@ const questionTypes = [
   'comprehension_spirituelle'
 ];
 
+const gameModes = ['classic', 'competition', 'champion'];
+const championRoundTypes = ['top_chrono', 'four_in_a_row', 'who_am_i', 'face_off'];
+const championRoundPlan = ['top_chrono', 'four_in_a_row', 'who_am_i', 'face_off'];
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -109,7 +113,7 @@ server.listen(PORT, () => {
 
 async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/meta') {
-    sendJson(res, 200, { categories, levels, questionTypes, appBaseUrl: process.env.APP_BASE_URL || '' });
+    sendJson(res, 200, { categories, levels, questionTypes, gameModes, championRoundTypes, appBaseUrl: process.env.APP_BASE_URL || '' });
     return;
   }
 
@@ -810,6 +814,11 @@ function sanitizeRoom(body) {
     category: sanitizeString(body.category || 'random').slice(0, 80),
     difficulty: sanitizeString(body.difficulty || body.level || 'intermediaire').slice(0, 80),
     creatorId: sanitizeString(body.creatorId || '').slice(0, 100),
+    gameMode: gameModes.includes(body.gameMode) ? body.gameMode : 'competition',
+    championEdition: ['solo', 'multiplayer', 'scholar'].includes(body.championEdition) ? body.championEdition : '',
+    championVoiceEnabled: body.championVoiceEnabled === true,
+    championMusicEnabled: body.championMusicEnabled === true,
+    championFinaleMode: ['best_of_5', 'sudden_death', 'first_to_5'].includes(body.championFinaleMode) ? body.championFinaleMode : 'best_of_5',
     accessCode: sanitizeString(body.accessCode || '').slice(0, 24).toUpperCase(),
     isPublic: body.isPublic !== false,
     status: ['waiting', 'preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions', 'closed', 'finished'].includes(body.status) ? body.status : 'waiting',
@@ -820,9 +829,13 @@ function sanitizeRoom(body) {
     scheduledEndAt: isScheduled ? (defaultEnd > defaultStart ? defaultEnd : new Date(defaultStart.getTime() + durationMinutes * 60 * 1000)).toISOString() : null,
     durationMinutes,
     autoStart: body.autoStart === true,
-    questionTimeLimit: clamp(Number(body.questionTimeLimit || 30), 15, 60),
+    questionTimeLimit: body.gameMode === 'champion'
+      ? clamp(Number(body.questionTimeLimit || 12), 6, 60)
+      : clamp(Number(body.questionTimeLimit || 30), 15, 60),
     roundTimeLimit: durationMinutes,
-    questionsPerRound: clamp(Number(body.questionsPerRound || 10), 1, 20),
+    questionsPerRound: body.gameMode === 'champion'
+      ? clamp(Number(body.questionsPerRound || 12), 4, 20)
+      : clamp(Number(body.questionsPerRound || 10), 1, 20),
     questionMode: body.questionMode === 'personalized' ? 'personalized' : 'same',
     questionTypes: Array.isArray(body.questionTypes) && body.questionTypes.length
       ? body.questionTypes.filter((type) => questionTypes.includes(type)).slice(0, 8)
@@ -910,11 +923,17 @@ function leaveRoom(roomId, participantId) {
 function createRound(room, phase = 'preparing_questions') {
   const rounds = readJson('rounds.json');
   const roomRounds = rounds.filter((item) => item.roomId === room.id);
+  const championRoundType = room.gameMode === 'champion'
+    ? nextChampionRoundType(room, roomRounds.length + 1)
+    : '';
   const startsAt = new Date();
   const round = {
     id: `round-${crypto.randomUUID()}`,
     roomId: room.id,
     roundNumber: roomRounds.length + 1,
+    gameMode: room.gameMode || 'competition',
+    championRoundType,
+    championRoundLabel: championRoundType ? championRoundLabel(championRoundType) : '',
     status: 'active',
     phase,
     gameStatus: phase === 'finished' ? 'game_finished' : phase,
@@ -925,7 +944,7 @@ function createRound(room, phase = 'preparing_questions') {
     revealUntil: null,
     nextQuestionAt: null,
     startsAt: startsAt.toISOString(),
-    endsAt: new Date(startsAt.getTime() + room.roundTimeLimit * 60 * 1000).toISOString(),
+    endsAt: new Date(startsAt.getTime() + roundDurationMs(room, championRoundType)).toISOString(),
     generatedByAI: room.questionSource !== 'local' && azureConfigured(),
     validationStatus: 'pending',
     createdAt: startsAt.toISOString()
@@ -947,6 +966,82 @@ function latestRoundForRoom(roomId) {
   return readJson('rounds.json')
     .filter((round) => round.roomId === roomId)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+}
+
+function nextChampionRoundType(room, roundNumber) {
+  const participants = readJson('roomParticipants.json').filter((item) => item.roomId === room.id && !item.leftAt);
+  const plan = participants.length >= 2 ? championRoundPlan : championRoundPlan.filter((type) => type !== 'face_off');
+  return plan[(Math.max(1, roundNumber) - 1) % plan.length];
+}
+
+function championRoundLabel(type) {
+  return {
+    top_chrono: 'Top Chrono',
+    four_in_a_row: '4 a la suite',
+    who_am_i: 'Qui suis-je ?',
+    face_off: 'Face-a-face'
+  }[type] || 'Champion';
+}
+
+function roundDurationMs(room, championRoundType) {
+  if (room.gameMode !== 'champion') return room.roundTimeLimit * 60 * 1000;
+  if (championRoundType === 'top_chrono') return clamp(Number(room.roundTimeLimit || 2), 1, 2) * 60 * 1000;
+  if (championRoundType === 'face_off') return 5 * 60 * 1000;
+  return 4 * 60 * 1000;
+}
+
+function questionTimeLimitForRound(room, round) {
+  if (room.gameMode !== 'champion') return room.questionTimeLimit;
+  return {
+    top_chrono: 8,
+    four_in_a_row: 12,
+    who_am_i: 24,
+    face_off: 10
+  }[round.championRoundType] || room.questionTimeLimit;
+}
+
+function championGenerationProfile(room, round) {
+  if (room.gameMode !== 'champion') return {};
+  const scholar = isScholarLevel(room.difficulty);
+  const scholarFocus = 'contexte historique, empires antiques, chronologie prophetique, culture greco-romaine et Bible d etude';
+  const common = scholar
+    ? `Mode Scholar: integrer ${scholarFocus} sans confondre contexte historique et affirmation biblique.`
+    : 'Questions bibliques courtes, naturelles et rapides.';
+  const categoryLabel = championRoundLabel(round.championRoundType);
+  if (round.championRoundType === 'top_chrono') {
+    return {
+      count: Math.min(20, Math.max(12, room.questionsPerRound || 12)),
+      questionTypes: ['qcm', 'vrai_faux', 'personnage', 'livre_biblique'],
+      challengeType: 'champion_top_chrono',
+      categoryLabel,
+      instructions: `${common} Genere des questions tres courtes pour une manche Top Chrono, avec options lisibles en moins de 8 secondes.`
+    };
+  }
+  if (round.championRoundType === 'four_in_a_row') {
+    return {
+      count: 8,
+      questionTypes: ['qcm', 'personnage', 'livre_biblique'],
+      challengeType: 'champion_four_in_a_row',
+      categoryLabel,
+      instructions: `${common} Toutes les questions doivent rester dans une categorie coherente permettant une serie de 4 bonnes reponses, par exemple prophetes, rois, disciples, miracles ou livres historiques.`
+    };
+  }
+  if (round.championRoundType === 'who_am_i') {
+    return {
+      count: 5,
+      questionTypes: ['qui_suis_je', 'indice_progressif', 'personnage'],
+      challengeType: 'champion_who_am_i',
+      categoryLabel,
+      instructions: `${common} Pour chaque question, ajoute clues: tableau de 3 a 5 indices progressifs, du plus difficile au plus facile. La question doit commencer par "Qui suis-je ?".`
+    };
+  }
+  return {
+    count: 5,
+    questionTypes: ['qcm', 'personnage', 'contexte_historique'],
+    challengeType: 'champion_face_off',
+    categoryLabel,
+    instructions: `${common} Finale face-a-face: questions communes tres nettes, une seule bonne reponse, intensite elevee. Aucun bot joueur.`
+  };
 }
 
 function prepareRoundQuestions(roomId, roundId) {
@@ -1029,7 +1124,7 @@ function advanceRoomState(roomId) {
       phase: 'question_active',
       gameStatus: 'question_active',
       questionStartedAt: new Date(now).toISOString(),
-      questionEndsAt: new Date(now + room.questionTimeLimit * 1000).toISOString(),
+      questionEndsAt: new Date(now + questionTimeLimitForRound(room, round) * 1000).toISOString(),
       countdownEndsAt: null,
       revealUntil: null,
       nextQuestionAt: null
@@ -1067,7 +1162,7 @@ function advanceRoomState(roomId) {
       gameStatus: 'question_active',
       currentQuestionIndex: nextIndex,
       questionStartedAt: new Date(now).toISOString(),
-      questionEndsAt: new Date(now + room.questionTimeLimit * 1000).toISOString(),
+      questionEndsAt: new Date(now + questionTimeLimitForRound(room, round) * 1000).toISOString(),
       countdownEndsAt: null,
       revealUntil: null,
       nextQuestionAt: null
@@ -1092,12 +1187,13 @@ function finalizeCurrentQuestion(room, round, questions) {
   let changed = false;
   for (const answer of answers.filter((item) => item.roundId === round.id && item.questionId === question.id && !item.isFinalized)) {
     const isCorrect = normalize(answer.selectedAnswer) === normalize(question.correctAnswer);
-    const questionTimeLimitMs = room.questionTimeLimit * 1000;
+    const questionTimeLimitMs = questionTimeLimitForRound(room, round) * 1000;
     const remaining = Math.max(0, questionTimeLimitMs - Number(answer.responseTimeMs || 0));
     answer.isCorrect = isCorrect;
-    answer.basePoints = isCorrect ? 10 : 0;
-    answer.speedBonus = isCorrect ? Math.round(10 * remaining / questionTimeLimitMs) : 0;
-    answer.totalPoints = answer.basePoints + answer.speedBonus;
+    answer.basePoints = isCorrect ? championBasePoints(room, round) : 0;
+    answer.speedBonus = isCorrect ? Math.round(championSpeedWeight(room, round) * remaining / questionTimeLimitMs) : 0;
+    answer.streakBonus = isCorrect ? championStreakBonus(round, answers, answer) : 0;
+    answer.totalPoints = answer.basePoints + answer.speedBonus + answer.streakBonus;
     answer.isFinalized = true;
     changed = true;
   }
@@ -1105,23 +1201,64 @@ function finalizeCurrentQuestion(room, round, questions) {
   recalculateParticipantScores(room.id);
 }
 
+function championBasePoints(room, round) {
+  if (room.gameMode !== 'champion') return 10;
+  return {
+    top_chrono: 12,
+    four_in_a_row: 15,
+    who_am_i: 20,
+    face_off: 25
+  }[round.championRoundType] || 10;
+}
+
+function championSpeedWeight(room, round) {
+  if (room.gameMode !== 'champion') return 10;
+  return {
+    top_chrono: 18,
+    four_in_a_row: 10,
+    who_am_i: 20,
+    face_off: 25
+  }[round.championRoundType] || 10;
+}
+
+function championStreakBonus(round, answers, answer) {
+  if (round.gameMode !== 'champion' && !round.championRoundType) return 0;
+  const participantAnswers = answers
+    .filter((item) => item.roundId === round.id && item.participantId === answer.participantId && item.isFinalized)
+    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
+  let streak = 1;
+  for (let index = participantAnswers.length - 1; index >= 0; index -= 1) {
+    if (!participantAnswers[index].isCorrect) break;
+    streak += 1;
+  }
+  if (round.championRoundType === 'four_in_a_row') return streak >= 4 ? 25 : Math.max(0, streak - 1) * 3;
+  if (round.championRoundType === 'top_chrono') return Math.min(20, Math.max(0, streak - 1) * 4);
+  return streak >= 3 ? 10 : 0;
+}
+
 async function createQuestionsForRound(room, round) {
   const roundQuestions = readJson('roundQuestions.json').filter((item) => item.roundId !== round.id);
+  const championProfile = championGenerationProfile(room, round);
   const generated = await generateRoundQuestions({
     roomId: room.id,
     roundId: round.id,
     category: room.category,
     difficulty: room.difficulty,
-    count: room.questionsPerRound,
-    questionTypes: room.questionTypes || ['qcm', 'vrai_faux', 'personnage'],
+    count: championProfile.count || room.questionsPerRound,
+    questionTypes: championProfile.questionTypes || room.questionTypes || ['qcm', 'vrai_faux', 'personnage'],
     questionSource: room.questionSource || 'ai',
     questionBankId: room.questionBankId,
+    challengeType: championProfile.challengeType || 'competition',
+    championRoundType: round.championRoundType || '',
+    championInstructions: championProfile.instructions || '',
     recentQuestions: recentRoomQuestionTexts(room.id)
   });
   const saved = generated.questions.map((question, index) => sanitizeRoundQuestion({
     ...question,
     id: `rq-${crypto.randomUUID()}`,
     roundId: round.id,
+    championRoundType: round.championRoundType || '',
+    championCategory: question.championCategory || championProfile.categoryLabel || '',
     category: question.category || room.category,
     difficulty: question.difficulty || question.level || room.difficulty,
     order: index + 1
@@ -1299,6 +1436,8 @@ async function generateCompetitionQuestions(input, count) {
         difficulty: input.difficulty || input.level,
         difficultyGuidance: difficultyGuidance(input.difficulty || input.level),
         challengeType: input.challengeType || 'competition',
+        championRoundType: input.championRoundType || null,
+        championInstructions: input.championInstructions || null,
         count,
         participantLevel: input.participantLevel || null,
         recentQuestions: input.recentQuestions || [],
@@ -1322,6 +1461,8 @@ async function generateCompetitionQuestions(input, count) {
             explanation: 'string',
             reference: 'string',
             historicalNote: 'string optionnel, separe du texte biblique direct',
+            clues: ['indices progressifs optionnels pour Qui suis-je ?'],
+            championCategory: 'categorie courte optionnelle pour la manche',
             level: input.difficulty || input.level,
             category: input.category,
             justification: 'string'
@@ -1396,6 +1537,9 @@ function sanitizeRoundQuestion(body) {
     correctAnswer: question.correctAnswer,
     explanation: question.explanation,
     historicalNote: question.historicalNote,
+    clues: question.clues,
+    championRoundType: championRoundTypes.includes(body.championRoundType) ? body.championRoundType : '',
+    championCategory: sanitizeString(body.championCategory || question.championCategory || '').slice(0, 80),
     reference: question.reference,
     category: question.category,
     difficulty: sanitizeString(body.difficulty || question.level).slice(0, 80),
@@ -1428,6 +1572,11 @@ function submitRoundAnswer(roundId, body) {
   const answers = readJson('answers.json');
   const responseTimeMs = clamp(Date.now() - new Date(round.questionStartedAt).getTime(), 0, 60 * 1000);
   const selectedAnswer = sanitizeString(body.selectedAnswer || '').slice(0, 180);
+  if (round.championRoundType === 'face_off') {
+    const otherAnswers = answers.filter((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId !== participant.id && answer.selectedAnswer);
+    const lockedByCorrect = otherAnswers.some((answer) => normalize(answer.selectedAnswer) === normalize(question.correctAnswer));
+    if (lockedByCorrect) return { error: 'Face-a-face verrouille: le plus rapide a donne la bonne reponse.', status: 409 };
+  }
   const existingAnswer = answers.find((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId === participant.id);
   if (existingAnswer) {
     existingAnswer.selectedAnswer = selectedAnswer;
@@ -1436,6 +1585,7 @@ function submitRoundAnswer(roundId, body) {
     existingAnswer.isCorrect = false;
     existingAnswer.basePoints = 0;
     existingAnswer.speedBonus = 0;
+    existingAnswer.streakBonus = 0;
     existingAnswer.totalPoints = 0;
     existingAnswer.isFinalized = false;
     writeJson('answers.json', answers);
@@ -1456,6 +1606,7 @@ function submitRoundAnswer(roundId, body) {
     responseTimeMs,
     basePoints: 0,
     speedBonus: 0,
+    streakBonus: 0,
     totalPoints: 0,
     isFinalized: false,
     answeredAt: new Date().toISOString()
@@ -1507,6 +1658,9 @@ function buildRoomState(roomInput, participantId) {
     question: currentQuestion.question,
     type: currentQuestion.type,
     options: currentQuestion.options,
+    clues: currentQuestion.clues || [],
+    championRoundType: currentQuestion.championRoundType || round?.championRoundType || '',
+    championCategory: currentQuestion.championCategory || '',
     explanation: revealQuestion && room.explanationsEnabled !== false ? currentQuestion.explanation : undefined,
     historicalNote: revealQuestion && room.explanationsEnabled !== false ? currentQuestion.historicalNote : undefined,
     reference: revealQuestion ? currentQuestion.reference : undefined,
@@ -1523,6 +1677,7 @@ function buildRoomState(roomInput, participantId) {
       selectedAnswer: currentAnswer.selectedAnswer,
       isFinalized: currentAnswer.isFinalized,
       totalPoints: currentAnswer.totalPoints,
+      streakBonus: currentAnswer.streakBonus || 0,
       isCorrect: currentAnswer.isCorrect
     } : null,
     serverNow: new Date(now).toISOString(),
@@ -1531,6 +1686,7 @@ function buildRoomState(roomInput, participantId) {
     countdownEndsAt: round?.countdownEndsAt || (phase === 'starting_countdown' ? round?.nextQuestionAt : null) || null,
     questionStartedAt: round?.questionStartedAt || null,
     questionEndsAt: round?.questionEndsAt || null,
+    questionTimeLimit: round ? questionTimeLimitForRound(room, round) : room.questionTimeLimit,
     currentQuestionIndex: round ? Number(round.currentQuestionIndex || 0) : 0,
     preparationMessage: round?.preparationMessage || null,
     timeRemainingMs,
@@ -2380,6 +2536,9 @@ function azureConfigured() {
 
 function sanitizeQuestion(body) {
   const options = Array.isArray(body.options) ? body.options.map((v) => sanitizeString(v).slice(0, 180)).filter(Boolean) : [];
+  const clues = Array.isArray(body.clues)
+    ? body.clues.map((v) => sanitizeString(v).slice(0, 240)).filter(Boolean).slice(0, 5)
+    : [];
   return {
     id: sanitizeString(body.id || '').slice(0, 80),
     question: sanitizeString(body.question || '').slice(0, 500),
@@ -2388,6 +2547,8 @@ function sanitizeQuestion(body) {
     correctAnswer: sanitizeString(body.correctAnswer || '').slice(0, 180),
     explanation: sanitizeString(body.explanation || '').slice(0, 700),
     historicalNote: sanitizeString(body.historicalNote || body.historyNote || '').slice(0, 500),
+    clues,
+    championCategory: sanitizeString(body.championCategory || '').slice(0, 80),
     reference: sanitizeString(body.reference || '').slice(0, 120),
     category: sanitizeString(body.category || 'random').slice(0, 80),
     level: sanitizeString(body.level || body.difficulty || 'debutant').slice(0, 80),
