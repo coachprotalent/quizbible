@@ -90,6 +90,10 @@ const questionTypes = [
   'comprehension_spirituelle'
 ];
 
+const gameModes = ['classic', 'competition', 'champion'];
+const championRoundTypes = ['top_chrono', 'four_in_a_row', 'who_am_i', 'face_off'];
+const championRoundPlan = ['top_chrono', 'four_in_a_row', 'who_am_i', 'face_off'];
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -109,7 +113,7 @@ server.listen(PORT, () => {
 
 async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/meta') {
-    sendJson(res, 200, { categories, levels, questionTypes, appBaseUrl: process.env.APP_BASE_URL || '' });
+    sendJson(res, 200, { categories, levels, questionTypes, gameModes, championRoundTypes, appBaseUrl: process.env.APP_BASE_URL || '' });
     return;
   }
 
@@ -355,10 +359,13 @@ async function handleApi(req, res, url) {
 
 async function handleAdminApi(req, res, url, adminUser) {
   if (req.method === 'GET' && url.pathname === '/api/admin/dashboard') {
+    const analytics = buildAdminAnalytics();
     sendJson(res, 200, {
       questions: [],
       challenges: readJson('challenges.json'),
       sessions: readJson('sessions.json'),
+      analytics,
+      historySummary: analytics.summary,
       leaderboard: readJson('leaderboard.json'),
       rooms: readJson('rooms.json').map(withRoomCounts),
       roomParticipants: readJson('roomParticipants.json'),
@@ -373,6 +380,29 @@ async function handleAdminApi(req, res, url, adminUser) {
       categories,
       levels
     });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/history/competitions') {
+    sendJson(res, 200, { sessions: historyByMode('competition'), summary: buildAdminAnalytics().summary });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/history/classic') {
+    sendJson(res, 200, { sessions: historyByMode('classic'), summary: buildAdminAnalytics().summary });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/history/champion') {
+    sendJson(res, 200, { sessions: historyByMode('champion'), summary: buildAdminAnalytics().summary });
+    return;
+  }
+
+  const historySessionMatch = url.pathname.match(/^\/api\/admin\/history\/session\/([^/]+)$/);
+  if (historySessionMatch && req.method === 'GET') {
+    const session = detailedHistorySession(decodeURIComponent(historySessionMatch[1]));
+    if (!session) return sendJson(res, 404, { error: 'Session introuvable' });
+    sendJson(res, 200, { session });
     return;
   }
 
@@ -810,6 +840,11 @@ function sanitizeRoom(body) {
     category: sanitizeString(body.category || 'random').slice(0, 80),
     difficulty: sanitizeString(body.difficulty || body.level || 'intermediaire').slice(0, 80),
     creatorId: sanitizeString(body.creatorId || '').slice(0, 100),
+    gameMode: gameModes.includes(body.gameMode) ? body.gameMode : 'competition',
+    championEdition: ['solo', 'multiplayer', 'scholar'].includes(body.championEdition) ? body.championEdition : '',
+    championVoiceEnabled: body.championVoiceEnabled === true,
+    championMusicEnabled: body.championMusicEnabled === true,
+    championFinaleMode: ['best_of_5', 'sudden_death', 'first_to_5'].includes(body.championFinaleMode) ? body.championFinaleMode : 'best_of_5',
     accessCode: sanitizeString(body.accessCode || '').slice(0, 24).toUpperCase(),
     isPublic: body.isPublic !== false,
     status: ['waiting', 'preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions', 'closed', 'finished'].includes(body.status) ? body.status : 'waiting',
@@ -820,9 +855,13 @@ function sanitizeRoom(body) {
     scheduledEndAt: isScheduled ? (defaultEnd > defaultStart ? defaultEnd : new Date(defaultStart.getTime() + durationMinutes * 60 * 1000)).toISOString() : null,
     durationMinutes,
     autoStart: body.autoStart === true,
-    questionTimeLimit: clamp(Number(body.questionTimeLimit || 30), 15, 60),
+    questionTimeLimit: body.gameMode === 'champion'
+      ? clamp(Number(body.questionTimeLimit || 12), 6, 60)
+      : clamp(Number(body.questionTimeLimit || 30), 15, 60),
     roundTimeLimit: durationMinutes,
-    questionsPerRound: clamp(Number(body.questionsPerRound || 10), 1, 20),
+    questionsPerRound: body.gameMode === 'champion'
+      ? clamp(Number(body.questionsPerRound || 12), 4, 20)
+      : clamp(Number(body.questionsPerRound || 10), 1, 20),
     questionMode: body.questionMode === 'personalized' ? 'personalized' : 'same',
     questionTypes: Array.isArray(body.questionTypes) && body.questionTypes.length
       ? body.questionTypes.filter((type) => questionTypes.includes(type)).slice(0, 8)
@@ -910,11 +949,17 @@ function leaveRoom(roomId, participantId) {
 function createRound(room, phase = 'preparing_questions') {
   const rounds = readJson('rounds.json');
   const roomRounds = rounds.filter((item) => item.roomId === room.id);
+  const championRoundType = room.gameMode === 'champion'
+    ? nextChampionRoundType(room, roomRounds.length + 1)
+    : '';
   const startsAt = new Date();
   const round = {
     id: `round-${crypto.randomUUID()}`,
     roomId: room.id,
     roundNumber: roomRounds.length + 1,
+    gameMode: room.gameMode || 'competition',
+    championRoundType,
+    championRoundLabel: championRoundType ? championRoundLabel(championRoundType) : '',
     status: 'active',
     phase,
     gameStatus: phase === 'finished' ? 'game_finished' : phase,
@@ -925,7 +970,7 @@ function createRound(room, phase = 'preparing_questions') {
     revealUntil: null,
     nextQuestionAt: null,
     startsAt: startsAt.toISOString(),
-    endsAt: new Date(startsAt.getTime() + room.roundTimeLimit * 60 * 1000).toISOString(),
+    endsAt: new Date(startsAt.getTime() + roundDurationMs(room, championRoundType)).toISOString(),
     generatedByAI: room.questionSource !== 'local' && azureConfigured(),
     validationStatus: 'pending',
     createdAt: startsAt.toISOString()
@@ -947,6 +992,82 @@ function latestRoundForRoom(roomId) {
   return readJson('rounds.json')
     .filter((round) => round.roomId === roomId)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0] || null;
+}
+
+function nextChampionRoundType(room, roundNumber) {
+  const participants = readJson('roomParticipants.json').filter((item) => item.roomId === room.id && !item.leftAt);
+  const plan = participants.length >= 2 ? championRoundPlan : championRoundPlan.filter((type) => type !== 'face_off');
+  return plan[(Math.max(1, roundNumber) - 1) % plan.length];
+}
+
+function championRoundLabel(type) {
+  return {
+    top_chrono: 'Top Chrono',
+    four_in_a_row: '4 a la suite',
+    who_am_i: 'Qui suis-je ?',
+    face_off: 'Face-a-face'
+  }[type] || 'Champion';
+}
+
+function roundDurationMs(room, championRoundType) {
+  if (room.gameMode !== 'champion') return room.roundTimeLimit * 60 * 1000;
+  if (championRoundType === 'top_chrono') return clamp(Number(room.roundTimeLimit || 2), 1, 2) * 60 * 1000;
+  if (championRoundType === 'face_off') return 5 * 60 * 1000;
+  return 4 * 60 * 1000;
+}
+
+function questionTimeLimitForRound(room, round) {
+  if (room.gameMode !== 'champion') return room.questionTimeLimit;
+  return {
+    top_chrono: 8,
+    four_in_a_row: 12,
+    who_am_i: 24,
+    face_off: 10
+  }[round.championRoundType] || room.questionTimeLimit;
+}
+
+function championGenerationProfile(room, round) {
+  if (room.gameMode !== 'champion') return {};
+  const scholar = isScholarLevel(room.difficulty);
+  const scholarFocus = 'contexte historique, empires antiques, chronologie prophetique, culture greco-romaine et Bible d etude';
+  const common = scholar
+    ? `Mode Scholar: integrer ${scholarFocus} sans confondre contexte historique et affirmation biblique.`
+    : 'Questions bibliques courtes, naturelles et rapides.';
+  const categoryLabel = championRoundLabel(round.championRoundType);
+  if (round.championRoundType === 'top_chrono') {
+    return {
+      count: Math.min(20, Math.max(12, room.questionsPerRound || 12)),
+      questionTypes: ['qcm', 'vrai_faux', 'personnage', 'livre_biblique'],
+      challengeType: 'champion_top_chrono',
+      categoryLabel,
+      instructions: `${common} Genere des questions tres courtes pour une manche Top Chrono, avec options lisibles en moins de 8 secondes.`
+    };
+  }
+  if (round.championRoundType === 'four_in_a_row') {
+    return {
+      count: 8,
+      questionTypes: ['qcm', 'personnage', 'livre_biblique'],
+      challengeType: 'champion_four_in_a_row',
+      categoryLabel,
+      instructions: `${common} Toutes les questions doivent rester dans une categorie coherente permettant une serie de 4 bonnes reponses, par exemple prophetes, rois, disciples, miracles ou livres historiques.`
+    };
+  }
+  if (round.championRoundType === 'who_am_i') {
+    return {
+      count: 5,
+      questionTypes: ['qui_suis_je', 'indice_progressif', 'personnage'],
+      challengeType: 'champion_who_am_i',
+      categoryLabel,
+      instructions: `${common} Pour chaque question, ajoute clues: tableau de 3 a 5 indices progressifs, du plus difficile au plus facile. La question doit commencer par "Qui suis-je ?".`
+    };
+  }
+  return {
+    count: 5,
+    questionTypes: ['qcm', 'personnage', 'contexte_historique'],
+    challengeType: 'champion_face_off',
+    categoryLabel,
+    instructions: `${common} Finale face-a-face: questions communes tres nettes, une seule bonne reponse, intensite elevee. Aucun bot joueur.`
+  };
 }
 
 function prepareRoundQuestions(roomId, roundId) {
@@ -987,6 +1108,7 @@ function finishRound(roundId) {
   const rounds = readJson('rounds.json');
   const round = rounds.find((item) => item.id === roundId);
   if (!round) return null;
+  finalizeRoundAnalytics(round);
   round.status = 'finished';
   round.phase = 'finished';
   round.gameStatus = 'game_finished';
@@ -1029,7 +1151,7 @@ function advanceRoomState(roomId) {
       phase: 'question_active',
       gameStatus: 'question_active',
       questionStartedAt: new Date(now).toISOString(),
-      questionEndsAt: new Date(now + room.questionTimeLimit * 1000).toISOString(),
+      questionEndsAt: new Date(now + questionTimeLimitForRound(room, round) * 1000).toISOString(),
       countdownEndsAt: null,
       revealUntil: null,
       nextQuestionAt: null
@@ -1067,7 +1189,7 @@ function advanceRoomState(roomId) {
       gameStatus: 'question_active',
       currentQuestionIndex: nextIndex,
       questionStartedAt: new Date(now).toISOString(),
-      questionEndsAt: new Date(now + room.questionTimeLimit * 1000).toISOString(),
+      questionEndsAt: new Date(now + questionTimeLimitForRound(room, round) * 1000).toISOString(),
       countdownEndsAt: null,
       revealUntil: null,
       nextQuestionAt: null
@@ -1092,12 +1214,13 @@ function finalizeCurrentQuestion(room, round, questions) {
   let changed = false;
   for (const answer of answers.filter((item) => item.roundId === round.id && item.questionId === question.id && !item.isFinalized)) {
     const isCorrect = normalize(answer.selectedAnswer) === normalize(question.correctAnswer);
-    const questionTimeLimitMs = room.questionTimeLimit * 1000;
+    const questionTimeLimitMs = questionTimeLimitForRound(room, round) * 1000;
     const remaining = Math.max(0, questionTimeLimitMs - Number(answer.responseTimeMs || 0));
     answer.isCorrect = isCorrect;
-    answer.basePoints = isCorrect ? 10 : 0;
-    answer.speedBonus = isCorrect ? Math.round(10 * remaining / questionTimeLimitMs) : 0;
-    answer.totalPoints = answer.basePoints + answer.speedBonus;
+    answer.basePoints = isCorrect ? championBasePoints(room, round) : 0;
+    answer.speedBonus = isCorrect ? Math.round(championSpeedWeight(room, round) * remaining / questionTimeLimitMs) : 0;
+    answer.streakBonus = isCorrect ? championStreakBonus(round, answers, answer) : 0;
+    answer.totalPoints = answer.basePoints + answer.speedBonus + answer.streakBonus;
     answer.isFinalized = true;
     changed = true;
   }
@@ -1105,23 +1228,64 @@ function finalizeCurrentQuestion(room, round, questions) {
   recalculateParticipantScores(room.id);
 }
 
+function championBasePoints(room, round) {
+  if (room.gameMode !== 'champion') return 10;
+  return {
+    top_chrono: 12,
+    four_in_a_row: 15,
+    who_am_i: 20,
+    face_off: 25
+  }[round.championRoundType] || 10;
+}
+
+function championSpeedWeight(room, round) {
+  if (room.gameMode !== 'champion') return 10;
+  return {
+    top_chrono: 18,
+    four_in_a_row: 10,
+    who_am_i: 20,
+    face_off: 25
+  }[round.championRoundType] || 10;
+}
+
+function championStreakBonus(round, answers, answer) {
+  if (round.gameMode !== 'champion' && !round.championRoundType) return 0;
+  const participantAnswers = answers
+    .filter((item) => item.roundId === round.id && item.participantId === answer.participantId && item.isFinalized)
+    .sort((a, b) => new Date(a.answeredAt) - new Date(b.answeredAt));
+  let streak = 1;
+  for (let index = participantAnswers.length - 1; index >= 0; index -= 1) {
+    if (!participantAnswers[index].isCorrect) break;
+    streak += 1;
+  }
+  if (round.championRoundType === 'four_in_a_row') return streak >= 4 ? 25 : Math.max(0, streak - 1) * 3;
+  if (round.championRoundType === 'top_chrono') return Math.min(20, Math.max(0, streak - 1) * 4);
+  return streak >= 3 ? 10 : 0;
+}
+
 async function createQuestionsForRound(room, round) {
   const roundQuestions = readJson('roundQuestions.json').filter((item) => item.roundId !== round.id);
+  const championProfile = championGenerationProfile(room, round);
   const generated = await generateRoundQuestions({
     roomId: room.id,
     roundId: round.id,
     category: room.category,
     difficulty: room.difficulty,
-    count: room.questionsPerRound,
-    questionTypes: room.questionTypes || ['qcm', 'vrai_faux', 'personnage'],
+    count: championProfile.count || room.questionsPerRound,
+    questionTypes: championProfile.questionTypes || room.questionTypes || ['qcm', 'vrai_faux', 'personnage'],
     questionSource: room.questionSource || 'ai',
     questionBankId: room.questionBankId,
+    challengeType: championProfile.challengeType || 'competition',
+    championRoundType: round.championRoundType || '',
+    championInstructions: championProfile.instructions || '',
     recentQuestions: recentRoomQuestionTexts(room.id)
   });
   const saved = generated.questions.map((question, index) => sanitizeRoundQuestion({
     ...question,
     id: `rq-${crypto.randomUUID()}`,
     roundId: round.id,
+    championRoundType: round.championRoundType || '',
+    championCategory: question.championCategory || championProfile.categoryLabel || '',
     category: question.category || room.category,
     difficulty: question.difficulty || question.level || room.difficulty,
     order: index + 1
@@ -1171,7 +1335,29 @@ async function createStartGame(body, count) {
   return { gameSessionId, questions: saved };
 }
 
+const QuestionGenerationService = {
+  async prepare(input = {}) {
+    const normalized = {
+      ...input,
+      category: validId(input.category, categories, 'random'),
+      difficulty: normalizeLevelId(input.difficulty || input.level || 'debutant'),
+      level: normalizeLevelId(input.level || input.difficulty || 'debutant'),
+      questionSource: input.questionSource === 'local' ? 'local' : 'ai',
+      recentQuestions: Array.isArray(input.recentQuestions) ? input.recentQuestions : []
+    };
+    if (normalized.gameMode === 'classic' && normalized.questionSource !== 'local') {
+      const questions = await generateClassicQuestionsInternal({ ...normalized, level: normalized.level });
+      return { questions, validationStatus: questions.some((question) => question.source === 'fallback_local') ? 'fallback_local' : 'validated', validation: { results: [] } };
+    }
+    return generateRoundQuestionsInternal(normalized);
+  }
+};
+
 async function generateRoundQuestions(input) {
+  return QuestionGenerationService.prepare(input);
+}
+
+async function generateRoundQuestionsInternal(input) {
   const count = clamp(Number(input.count || 10), 1, 20);
   if (input.questionSource === 'local') {
     if (!input.questionBankId) throw new Error('Choisissez une banque de questions locales.');
@@ -1299,6 +1485,8 @@ async function generateCompetitionQuestions(input, count) {
         difficulty: input.difficulty || input.level,
         difficultyGuidance: difficultyGuidance(input.difficulty || input.level),
         challengeType: input.challengeType || 'competition',
+        championRoundType: input.championRoundType || null,
+        championInstructions: input.championInstructions || null,
         count,
         participantLevel: input.participantLevel || null,
         recentQuestions: input.recentQuestions || [],
@@ -1322,6 +1510,8 @@ async function generateCompetitionQuestions(input, count) {
             explanation: 'string',
             reference: 'string',
             historicalNote: 'string optionnel, separe du texte biblique direct',
+            clues: ['indices progressifs optionnels pour Qui suis-je ?'],
+            championCategory: 'categorie courte optionnelle pour la manche',
             level: input.difficulty || input.level,
             category: input.category,
             justification: 'string'
@@ -1396,6 +1586,9 @@ function sanitizeRoundQuestion(body) {
     correctAnswer: question.correctAnswer,
     explanation: question.explanation,
     historicalNote: question.historicalNote,
+    clues: question.clues,
+    championRoundType: championRoundTypes.includes(body.championRoundType) ? body.championRoundType : '',
+    championCategory: sanitizeString(body.championCategory || question.championCategory || '').slice(0, 80),
     reference: question.reference,
     category: question.category,
     difficulty: sanitizeString(body.difficulty || question.level).slice(0, 80),
@@ -1428,6 +1621,11 @@ function submitRoundAnswer(roundId, body) {
   const answers = readJson('answers.json');
   const responseTimeMs = clamp(Date.now() - new Date(round.questionStartedAt).getTime(), 0, 60 * 1000);
   const selectedAnswer = sanitizeString(body.selectedAnswer || '').slice(0, 180);
+  if (round.championRoundType === 'face_off') {
+    const otherAnswers = answers.filter((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId !== participant.id && answer.selectedAnswer);
+    const lockedByCorrect = otherAnswers.some((answer) => normalize(answer.selectedAnswer) === normalize(question.correctAnswer));
+    if (lockedByCorrect) return { error: 'Face-a-face verrouille: le plus rapide a donne la bonne reponse.', status: 409 };
+  }
   const existingAnswer = answers.find((answer) => answer.roundId === roundId && answer.questionId === question.id && answer.participantId === participant.id);
   if (existingAnswer) {
     existingAnswer.selectedAnswer = selectedAnswer;
@@ -1436,6 +1634,7 @@ function submitRoundAnswer(roundId, body) {
     existingAnswer.isCorrect = false;
     existingAnswer.basePoints = 0;
     existingAnswer.speedBonus = 0;
+    existingAnswer.streakBonus = 0;
     existingAnswer.totalPoints = 0;
     existingAnswer.isFinalized = false;
     writeJson('answers.json', answers);
@@ -1456,6 +1655,7 @@ function submitRoundAnswer(roundId, body) {
     responseTimeMs,
     basePoints: 0,
     speedBonus: 0,
+    streakBonus: 0,
     totalPoints: 0,
     isFinalized: false,
     answeredAt: new Date().toISOString()
@@ -1507,6 +1707,9 @@ function buildRoomState(roomInput, participantId) {
     question: currentQuestion.question,
     type: currentQuestion.type,
     options: currentQuestion.options,
+    clues: currentQuestion.clues || [],
+    championRoundType: currentQuestion.championRoundType || round?.championRoundType || '',
+    championCategory: currentQuestion.championCategory || '',
     explanation: revealQuestion && room.explanationsEnabled !== false ? currentQuestion.explanation : undefined,
     historicalNote: revealQuestion && room.explanationsEnabled !== false ? currentQuestion.historicalNote : undefined,
     reference: revealQuestion ? currentQuestion.reference : undefined,
@@ -1523,6 +1726,7 @@ function buildRoomState(roomInput, participantId) {
       selectedAnswer: currentAnswer.selectedAnswer,
       isFinalized: currentAnswer.isFinalized,
       totalPoints: currentAnswer.totalPoints,
+      streakBonus: currentAnswer.streakBonus || 0,
       isCorrect: currentAnswer.isCorrect
     } : null,
     serverNow: new Date(now).toISOString(),
@@ -1531,6 +1735,7 @@ function buildRoomState(roomInput, participantId) {
     countdownEndsAt: round?.countdownEndsAt || (phase === 'starting_countdown' ? round?.nextQuestionAt : null) || null,
     questionStartedAt: round?.questionStartedAt || null,
     questionEndsAt: round?.questionEndsAt || null,
+    questionTimeLimit: round ? questionTimeLimitForRound(room, round) : room.questionTimeLimit,
     currentQuestionIndex: round ? Number(round.currentQuestionIndex || 0) : 0,
     preparationMessage: round?.preparationMessage || null,
     timeRemainingMs,
@@ -1595,10 +1800,344 @@ function roomResults(roomId) {
   };
 }
 
+function analyticsFiles() {
+  return {
+    sessions: readJson('gameSessions.json'),
+    participants: readJson('gameParticipants.json'),
+    attempts: readJson('questionAttempts.json')
+  };
+}
+
+function persistUnique(file, rows, key = 'id') {
+  const current = readJson(file);
+  const existing = new Set(current.map((item) => item[key]));
+  const additions = rows.filter((item) => item?.[key] && !existing.has(item[key]));
+  if (additions.length) writeJson(file, current.concat(additions));
+}
+
+function questionSourceFor(value, generatedByAI) {
+  if (value === 'local' || value === 'local_bank' || value === 'local_selected') return 'local_bank';
+  if (value === 'fallback_local') return 'local_bank';
+  return generatedByAI === false ? 'local_bank' : 'ai';
+}
+
+function persistClassicAnalytics(session, review, questions, answers, body) {
+  const sessionId = session.gameSessionId || session.id;
+  const endedAt = session.createdAt;
+  const durationSeconds = Number(session.durationSeconds || session.duration || body.duration || 0);
+  const questionSource = questions.some((question) => String(question.source || question.aiValidationStatus || '').includes('local'))
+    ? 'local_bank'
+    : 'ai';
+  const skippedAnswers = review.filter((item) => !item.answer).length;
+  const participantId = `gp-${sessionId}`;
+  persistUnique('gameSessions.json', [{
+    id: sessionId,
+    gameMode: 'classic',
+    subMode: '',
+    roomId: null,
+    category: session.category,
+    difficulty: session.level,
+    questionSource,
+    questionBankId: null,
+    totalQuestions: session.totalQuestions,
+    startedAt: new Date(new Date(endedAt).getTime() - durationSeconds * 1000).toISOString(),
+    endedAt,
+    durationSeconds,
+    status: 'finished',
+    createdBy: null
+  }]);
+  persistUnique('gameParticipants.json', [{
+    id: participantId,
+    sessionId,
+    userId: null,
+    displayName: session.playerName,
+    finalScore: session.score,
+    percentage: Math.round((Number(session.correctAnswers || 0) / Math.max(Number(session.totalQuestions || 1), 1)) * 100),
+    performanceScore: session.scorePerformance,
+    totalResponseTime: Math.max(0, durationSeconds * 1000),
+    correctAnswers: session.correctAnswers,
+    wrongAnswers: Math.max(0, session.totalQuestions - session.correctAnswers - skippedAnswers),
+    skippedAnswers,
+    rank: 1
+  }]);
+  persistUnique('questionAttempts.json', review.map((item) => {
+    const submitted = answers.find((answer) => answer.questionId === item.questionId) || {};
+    const responseTimeMs = Math.max(0, (Number(submitted.timeLimit || body.timeLimit || 30) - Number(submitted.timeLeft || 0)) * 1000);
+    return {
+      id: `qa-${sessionId}-${item.questionId}`,
+      sessionId,
+      participantId,
+      questionId: item.questionId,
+      question: item.question,
+      selectedAnswer: item.answer,
+      correctAnswer: item.correctAnswer,
+      isCorrect: item.isCorrect,
+      responseTimeMs,
+      pointsEarned: item.points,
+      createdAt: endedAt
+    };
+  }));
+}
+
+function finalizeRoundAnalytics(roundInput, forcedStatus = 'finished') {
+  const round = readJson('rounds.json').find((item) => item.id === roundInput.id) || roundInput;
+  const room = readJson('rooms.json').find((item) => item.id === round.roomId);
+  if (!room) return;
+  const sessionId = round.id;
+  if (readJson('gameSessions.json').some((item) => item.id === sessionId)) return;
+  const questions = readJson('roundQuestions.json').filter((item) => item.roundId === round.id).sort((a, b) => a.order - b.order);
+  const participants = readJson('roomParticipants.json').filter((item) => item.roomId === room.id);
+  const answers = readJson('answers.json').filter((item) => item.roundId === round.id);
+  const endedAt = new Date().toISOString();
+  const startedAt = round.startsAt || room.startDate || room.createdAt || endedAt;
+  const durationSeconds = Math.max(1, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
+  const leaderboard = participants.map((participant) => {
+    const participantAnswers = answers.filter((answer) => answer.participantId === participant.id && answer.isFinalized);
+    const correctAnswers = participantAnswers.filter((answer) => answer.isCorrect).length;
+    const skippedAnswers = Math.max(0, questions.length - participantAnswers.filter((answer) => answer.selectedAnswer).length);
+    const wrongAnswers = participantAnswers.filter((answer) => answer.selectedAnswer && !answer.isCorrect).length;
+    const finalScore = participantAnswers.reduce((sum, answer) => sum + Number(answer.totalPoints || 0), 0);
+    const totalResponseTime = participantAnswers.reduce((sum, answer) => sum + Number(answer.responseTimeMs || 0), 0);
+    return {
+      participant,
+      finalScore,
+      percentage: questions.length ? Math.round((correctAnswers / questions.length) * 100) : 0,
+      performanceScore: finalScore / Math.max(durationSeconds, 1),
+      totalResponseTime,
+      correctAnswers,
+      wrongAnswers,
+      skippedAnswers
+    };
+  }).sort((a, b) => b.finalScore - a.finalScore || b.correctAnswers - a.correctAnswers || a.totalResponseTime - b.totalResponseTime);
+
+  persistUnique('gameSessions.json', [{
+    id: sessionId,
+    gameMode: room.gameMode === 'champion' ? 'champion' : 'competition',
+    subMode: round.championRoundType || '',
+    roomId: room.id,
+    roomName: room.name,
+    category: room.category,
+    difficulty: room.difficulty,
+    questionSource: questionSourceFor(room.questionSource, round.generatedByAI),
+    questionBankId: room.questionBankId || null,
+    totalQuestions: questions.length,
+    startedAt,
+    endedAt,
+    durationSeconds,
+    status: forcedStatus,
+    createdBy: room.creatorId || null
+  }]);
+  persistUnique('gameParticipants.json', leaderboard.map((row, index) => ({
+    id: `gp-${sessionId}-${row.participant.id}`,
+    sessionId,
+    userId: row.participant.userId || null,
+    displayName: row.participant.playerName || row.participant.displayName || 'Anonyme',
+    finalScore: row.finalScore,
+    percentage: row.percentage,
+    performanceScore: row.performanceScore,
+    totalResponseTime: row.totalResponseTime,
+    correctAnswers: row.correctAnswers,
+    wrongAnswers: row.wrongAnswers,
+    skippedAnswers: row.skippedAnswers,
+    rank: index + 1
+  })));
+  persistUnique('questionAttempts.json', participants.flatMap((participant) => questions.map((question) => {
+    const answer = answers.find((item) => item.participantId === participant.id && item.questionId === question.id);
+    return {
+      id: `qa-${sessionId}-${participant.id}-${question.id}`,
+      sessionId,
+      participantId: `gp-${sessionId}-${participant.id}`,
+      questionId: question.id,
+      question: question.question,
+      selectedAnswer: answer?.selectedAnswer || '',
+      correctAnswer: question.correctAnswer,
+      isCorrect: Boolean(answer?.isCorrect),
+      responseTimeMs: Number(answer?.responseTimeMs || 0),
+      pointsEarned: Number(answer?.totalPoints || 0),
+      createdAt: answer?.answeredAt || endedAt
+    };
+  })));
+}
+
+function buildHistorySessions() {
+  const { sessions, participants, attempts } = analyticsFiles();
+  const sessionMap = new Map(sessions.map((session) => [session.id, { ...session }]));
+
+  for (const legacy of readJson('sessions.json')) {
+    const id = legacy.gameSessionId || legacy.id;
+    if (!sessionMap.has(id)) {
+      sessionMap.set(id, {
+        id,
+        gameMode: 'classic',
+        subMode: '',
+        roomId: null,
+        roomName: '',
+        category: legacy.category,
+        difficulty: legacy.level,
+        questionSource: 'ai',
+        questionBankId: null,
+        totalQuestions: legacy.totalQuestions,
+        startedAt: legacy.createdAt,
+        endedAt: legacy.createdAt,
+        durationSeconds: legacy.durationSeconds || legacy.duration || 0,
+        status: 'finished',
+        createdBy: null
+      });
+    }
+  }
+
+  for (const room of readJson('rooms.json')) {
+    const rounds = readJson('rounds.json').filter((round) => round.roomId === room.id && ['finished', 'failed'].includes(round.status));
+    for (const round of rounds) {
+      if (sessionMap.has(round.id)) continue;
+      const questions = readJson('roundQuestions.json').filter((question) => question.roundId === round.id);
+      sessionMap.set(round.id, {
+        id: round.id,
+        gameMode: room.gameMode === 'champion' ? 'champion' : 'competition',
+        subMode: round.championRoundType || '',
+        roomId: room.id,
+        roomName: room.name,
+        category: room.category,
+        difficulty: room.difficulty,
+        questionSource: questionSourceFor(room.questionSource, round.generatedByAI),
+        questionBankId: room.questionBankId || null,
+        totalQuestions: questions.length,
+        startedAt: round.startsAt || room.startDate,
+        endedAt: round.endsAt || room.endDate,
+        durationSeconds: Math.max(0, Math.round((new Date(round.endsAt || room.endDate) - new Date(round.startsAt || room.startDate)) / 1000)),
+        status: round.status === 'failed' ? 'cancelled' : 'finished',
+        createdBy: room.creatorId || null
+      });
+    }
+  }
+
+  return [...sessionMap.values()].map((session) => {
+    let sessionParticipants = participants.filter((item) => item.sessionId === session.id);
+    let sessionAttempts = attempts.filter((item) => item.sessionId === session.id);
+    if (!sessionParticipants.length && session.gameMode === 'classic') {
+      const legacy = readJson('sessions.json').find((item) => (item.gameSessionId || item.id) === session.id);
+      if (legacy) {
+        sessionParticipants = [{
+          id: `legacy-gp-${session.id}`,
+          sessionId: session.id,
+          userId: null,
+          displayName: legacy.playerName || 'Anonyme',
+          finalScore: legacy.score || 0,
+          percentage: legacy.totalQuestions ? Math.round((Number(legacy.correctAnswers || 0) / legacy.totalQuestions) * 100) : 0,
+          performanceScore: legacy.scorePerformance || 0,
+          totalResponseTime: Number(legacy.durationSeconds || 0) * 1000,
+          correctAnswers: legacy.correctAnswers || 0,
+          wrongAnswers: Math.max(0, Number(legacy.totalQuestions || 0) - Number(legacy.correctAnswers || 0)),
+          skippedAnswers: 0,
+          rank: 1
+        }];
+      }
+    }
+    if (!sessionParticipants.length && session.roomId) {
+      const legacy = legacyRoundParticipants(session);
+      sessionParticipants = legacy.participants;
+      sessionAttempts = sessionAttempts.length ? sessionAttempts : legacy.attempts;
+    }
+    return {
+      ...session,
+      participants: sessionParticipants,
+      attempts: sessionAttempts,
+      participantCount: sessionParticipants.length,
+      averageScore: average(sessionParticipants.map((item) => item.finalScore)),
+      bestScore: Math.max(0, ...sessionParticipants.map((item) => Number(item.finalScore || 0)))
+    };
+  }).sort((a, b) => new Date(b.startedAt || b.endedAt || 0) - new Date(a.startedAt || a.endedAt || 0));
+}
+
+function legacyRoundParticipants(session) {
+  const roomParticipants = readJson('roomParticipants.json').filter((item) => item.roomId === session.roomId);
+  const questions = readJson('roundQuestions.json').filter((item) => item.roundId === session.id);
+  const answers = readJson('answers.json').filter((item) => item.roundId === session.id && item.isFinalized);
+  const participants = roomParticipants.map((participant) => {
+    const participantAnswers = answers.filter((answer) => answer.participantId === participant.id);
+    const correctAnswers = participantAnswers.filter((answer) => answer.isCorrect).length;
+    const finalScore = participantAnswers.reduce((sum, answer) => sum + Number(answer.totalPoints || 0), 0);
+    const totalResponseTime = participantAnswers.reduce((sum, answer) => sum + Number(answer.responseTimeMs || 0), 0);
+    return {
+      id: `legacy-gp-${session.id}-${participant.id}`,
+      sessionId: session.id,
+      userId: participant.userId || null,
+      displayName: participant.playerName || participant.displayName || 'Anonyme',
+      finalScore,
+      percentage: questions.length ? Math.round((correctAnswers / questions.length) * 100) : 0,
+      performanceScore: finalScore / Math.max(Number(session.durationSeconds || 1), 1),
+      totalResponseTime,
+      correctAnswers,
+      wrongAnswers: participantAnswers.filter((answer) => answer.selectedAnswer && !answer.isCorrect).length,
+      skippedAnswers: Math.max(0, questions.length - participantAnswers.filter((answer) => answer.selectedAnswer).length),
+      rank: 0
+    };
+  }).sort((a, b) => b.finalScore - a.finalScore || b.correctAnswers - a.correctAnswers || a.totalResponseTime - b.totalResponseTime)
+    .map((participant, index) => ({ ...participant, rank: index + 1 }));
+  const attempts = roomParticipants.flatMap((participant) => questions.map((question) => {
+    const answer = answers.find((item) => item.participantId === participant.id && item.questionId === question.id);
+    return {
+      id: `legacy-qa-${session.id}-${participant.id}-${question.id}`,
+      sessionId: session.id,
+      participantId: `legacy-gp-${session.id}-${participant.id}`,
+      questionId: question.id,
+      question: question.question,
+      selectedAnswer: answer?.selectedAnswer || '',
+      correctAnswer: question.correctAnswer,
+      isCorrect: Boolean(answer?.isCorrect),
+      responseTimeMs: Number(answer?.responseTimeMs || 0),
+      pointsEarned: Number(answer?.totalPoints || 0),
+      createdAt: answer?.answeredAt || session.endedAt
+    };
+  }));
+  return { participants, attempts };
+}
+
+function historyByMode(mode) {
+  return buildHistorySessions().filter((session) => session.gameMode === mode);
+}
+
+function detailedHistorySession(id) {
+  return buildHistorySessions().find((session) => session.id === id) || null;
+}
+
+function buildAdminAnalytics() {
+  const sessions = buildHistorySessions();
+  const participants = sessions.flatMap((session) => session.participants || []);
+  const attempts = sessions.flatMap((session) => session.attempts || []);
+  return {
+    summary: {
+      totalGames: sessions.length,
+      totalPlayers: participants.length,
+      mostPlayedDifficulty: mostFrequent(sessions.map((session) => session.difficulty)),
+      mostPlayedCategory: mostFrequent(sessions.map((session) => session.category)),
+      averageScore: Math.round(average(participants.map((item) => item.finalScore))),
+      bestGlobalScore: Math.max(0, ...participants.map((item) => Number(item.finalScore || 0))),
+      averageResponseTimeMs: Math.round(average(attempts.filter((item) => item.responseTimeMs).map((item) => item.responseTimeMs)))
+    },
+    recentSessions: sessions.slice(0, 20)
+  };
+}
+
+function average(values) {
+  const valid = values.map(Number).filter(Number.isFinite);
+  return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : 0;
+}
+
+function mostFrequent(values) {
+  const counts = new Map();
+  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+}
+
 function updateRoomStatus(roomId, status) {
   const rooms = readJson('rooms.json');
   const room = rooms.find((item) => item.id === roomId);
   if (!room) return null;
+  if (['closed', 'finished'].includes(status) && !['closed', 'finished'].includes(room.status)) {
+    const latestRound = latestRoundForRoom(roomId);
+    if (latestRound) finalizeRoundAnalytics(latestRound, status === 'closed' ? 'cancelled' : 'finished');
+  }
   room.status = status;
   writeJson('rooms.json', rooms);
   return room;
@@ -1866,7 +2405,7 @@ function appendJson(file, item) {
 }
 
 function serveStatic(req, res, pathname) {
-  const cleanPath = pathname === '/' || pathname === '/admin' || pathname === '/operator' || pathname === '/login' ? '/index.html' : pathname;
+  const cleanPath = pathname === '/' || pathname === '/operator' || pathname === '/login' || pathname === '/admin' || pathname.startsWith('/admin/') ? '/index.html' : pathname;
   const fullPath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
   if (!fullPath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -2185,6 +2724,7 @@ function scoreGame(body) {
     durationSeconds,
     createdAt
   };
+  persistClassicAnalytics(session, review, questions, answers, body);
   return {
     session,
     leaderboard: {
@@ -2235,6 +2775,11 @@ function checkSingleAnswer(body) {
 }
 
 async function generateQuestions(input) {
+  const result = await QuestionGenerationService.prepare({ ...input, gameMode: 'classic', questionSource: input.questionSource || 'ai' });
+  return result.questions;
+}
+
+async function generateClassicQuestionsInternal(input) {
   const category = validId(input.category, categories, 'random');
   const level = validId(normalizeLevelId(input.level), levels, 'debutant');
   const count = clamp(Number(input.count || 10), 1, 20);
@@ -2380,6 +2925,9 @@ function azureConfigured() {
 
 function sanitizeQuestion(body) {
   const options = Array.isArray(body.options) ? body.options.map((v) => sanitizeString(v).slice(0, 180)).filter(Boolean) : [];
+  const clues = Array.isArray(body.clues)
+    ? body.clues.map((v) => sanitizeString(v).slice(0, 240)).filter(Boolean).slice(0, 5)
+    : [];
   return {
     id: sanitizeString(body.id || '').slice(0, 80),
     question: sanitizeString(body.question || '').slice(0, 500),
@@ -2388,6 +2936,8 @@ function sanitizeQuestion(body) {
     correctAnswer: sanitizeString(body.correctAnswer || '').slice(0, 180),
     explanation: sanitizeString(body.explanation || '').slice(0, 700),
     historicalNote: sanitizeString(body.historicalNote || body.historyNote || '').slice(0, 500),
+    clues,
+    championCategory: sanitizeString(body.championCategory || '').slice(0, 80),
     reference: sanitizeString(body.reference || '').slice(0, 120),
     category: sanitizeString(body.category || 'random').slice(0, 80),
     level: sanitizeString(body.level || body.difficulty || 'debutant').slice(0, 80),

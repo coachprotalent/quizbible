@@ -27,6 +27,7 @@
         </div>
         <button data-view="home">Accueil</button>
         <button data-view="play">Commencer</button>
+        <button data-view="champion">Question pour un Champion</button>
         <button data-view="competition">Competition</button>
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
@@ -44,6 +45,7 @@
           <p class="lead">Un jeu biblique moderne avec niveaux progressifs, explications, references et challenges d'etude.</p>
           <div class="hero-actions">
             <button class="primary" data-view="play">Commencer</button>
+            <button class="secondary" data-view="champion">Question pour un Champion</button>
             <button class="secondary" data-view="competition">Competition</button>
             <button class="secondary" data-view="challenges">Challenges</button>
             <button class="secondary" data-view="leaderboard">Classement</button>
@@ -59,6 +61,53 @@
             <span><b>5</b> niveaux</span>
             <span><b>17</b> categories</span>
             <span><b>+5</b> bonus vitesse</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="view shell champion-shell" id="championView">
+        <div class="section-head">
+          <p class="eyebrow">Mode TV biblique</p>
+          <h2>Question pour un Champion</h2>
+        </div>
+        <div class="champion-launch">
+          <form class="editor champion-setup" id="championSetup">
+            <h3>Lancer une partie Champion</h3>
+            <input name="playerName" placeholder="Votre nom" required>
+            <input name="name" placeholder="Nom du salon" value="Question pour un Champion" required>
+            <div class="champion-mode-grid" role="group" aria-label="Choix du mode Champion">
+              <label class="champion-choice"><input type="radio" name="championEdition" value="solo" checked><span>Solo</span></label>
+              <label class="champion-choice"><input type="radio" name="championEdition" value="multiplayer"><span>Multijoueur</span></label>
+              <label class="champion-choice"><input type="radio" name="championEdition" value="scholar"><span>Scholar Edition</span></label>
+            </div>
+            <select name="category" id="championCategorySelect"></select>
+            <select name="difficulty" id="championLevelSelect"></select>
+            <label>Source des questions
+              <select name="questionSource" id="championQuestionSource">
+                <option value="ai" selected>IA Azure si disponible</option>
+                <option value="local">Questions locales</option>
+              </select>
+            </label>
+            <label class="hidden" id="championQuestionBankWrap">Banque de questions
+              <select name="questionBankId" id="championQuestionBankSelect"></select>
+            </label>
+            <label>Finale
+              <select name="championFinaleMode">
+                <option value="best_of_5">Best of 5</option>
+                <option value="sudden_death">Mort subite</option>
+                <option value="first_to_5">Premier a 5 points</option>
+              </select>
+            </label>
+            <label class="check"><input name="championVoiceEnabled" type="checkbox"> Lecture vocale optionnelle</label>
+            <label class="check"><input name="championMusicEnabled" type="checkbox" checked> Ambiance sonore legere</label>
+            <button class="primary" type="submit">Demarrer</button>
+            <p class="form-message" id="championFormMessage" role="status"></p>
+          </form>
+          <div class="champion-preview" aria-label="Manches Champion">
+            <article><strong>Top Chrono</strong><span>Questions rapides, bonus vitesse et series.</span></article>
+            <article><strong>4 a la suite</strong><span>Une erreur casse la serie.</span></article>
+            <article><strong>Qui suis-je ?</strong><span>Indices progressifs, points si reponse rapide.</span></article>
+            <article><strong>Face-a-face</strong><span>Deux humains uniquement, vol possible apres erreur.</span></article>
           </div>
         </div>
       </section>
@@ -299,6 +348,17 @@
           <div class="admin-actions">
             <button class="secondary" id="adminRefresh" type="button">Rafraichir</button>
             <button class="secondary" id="adminLogout" type="button">Deconnexion</button>
+          </div>
+          <div class="admin-list">
+            <h3>Historique des parties</h3>
+            <div class="admin-actions admin-history-menu">
+              <button class="secondary" data-admin-history="competitions" type="button">Historique competitions</button>
+              <button class="secondary" data-admin-history="classic" type="button">Historique commencer</button>
+              <button class="secondary" data-admin-history="champion" type="button">Historique QPUC</button>
+            </div>
+            <div id="adminGlobalStats"></div>
+            <div id="adminHistoryList"></div>
+            <div id="adminHistoryDetail"></div>
           </div>
           <div class="admin-layout">
             <form class="editor" id="adminUserEditor">

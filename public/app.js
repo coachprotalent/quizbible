@@ -28,7 +28,8 @@ const competition = {
   phaseRefreshKey: null,
   questionStartedAt: 0,
   remaining: 30,
-  lastState: null
+  lastState: null,
+  spokenQuestionKey: ''
 };
 
 let questionBanks = [];
@@ -38,6 +39,7 @@ let operatorTargetType = 'bank';
 let operatorTargetId = '';
 let isMobileMenuOpen = false;
 let pendingProtectedView = '';
+let adminHistoryMode = 'competitions';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -57,7 +59,14 @@ async function init() {
   if (redirect === '/operator' || redirect === 'operator') pendingProtectedView = 'operator';
   handleInitialHash();
   restoreCompetitionSession();
-  if (location.pathname === '/admin') showView('admin');
+  if (location.pathname.startsWith('/admin')) {
+    adminHistoryMode = {
+      '/admin/competitions-history': 'competitions',
+      '/admin/classic-history': 'classic',
+      '/admin/champion-history': 'champion'
+    }[location.pathname] || adminHistoryMode;
+    showView('admin');
+  }
   if (location.pathname === '/operator') showView('operator');
   if (location.pathname === '/login') showView('login');
 }
@@ -147,6 +156,7 @@ function bindForms() {
   $('#loginForm').addEventListener('submit', loginUserForm);
   $('#adminLogout').addEventListener('click', adminLogout);
   $('#adminRefresh').addEventListener('click', loadAdmin);
+  $$('[data-admin-history]').forEach((button) => button.addEventListener('click', () => loadAdminHistory(button.dataset.adminHistory, true)));
   $('#adminUserEditor').addEventListener('submit', adminCreateUser);
   $('#challengeEditor').addEventListener('submit', addChallenge);
   $('#bankEditor').addEventListener('submit', addQuestionBank);
@@ -158,6 +168,7 @@ function bindForms() {
   $('#operatorGenerateText').addEventListener('submit', operatorGenerateQuestions);
   $('#challengeCancel').addEventListener('click', resetChallengeEditor);
   $('#roomCreateForm').addEventListener('submit', createRoom);
+  $('#championSetup').addEventListener('submit', createChampionRoom);
   $('#roomJoinForm').addEventListener('submit', joinRoomByCode);
   $('#startRound').addEventListener('click', startCompetitionRound);
   $('#leaveRoom').addEventListener('click', leaveCompetitionRoom);
@@ -165,9 +176,11 @@ function bindForms() {
   $('#competitionNext').addEventListener('click', nextCompetitionQuestion);
   $('#advancedToggle').addEventListener('click', () => $('#advancedOptions').classList.toggle('hidden'));
   $('#roomQuestionSource').addEventListener('change', updateQuestionBankVisibility);
+  $('#championQuestionSource').addEventListener('change', updateQuestionBankVisibility);
   $('#roomIsScheduled').addEventListener('change', updateScheduleVisibility);
-  ['#levelSelect', '#roomLevelSelect', '#challengeLevelSelect', '#bankLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel']
+  ['#levelSelect', '#roomLevelSelect', '#championLevelSelect', '#challengeLevelSelect', '#bankLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel']
     .forEach((selector) => $(selector)?.addEventListener('change', updateScholarNotices));
+  $$('input[name="championEdition"]').forEach((input) => input.addEventListener('change', updateChampionEdition));
   $$('.stepper button').forEach((button) => button.addEventListener('click', stepNumberInput));
 }
 
@@ -178,8 +191,8 @@ function fillSelects() {
     return `<option value="${escapeHtml(level.id)}">${escapeHtml(label)}</option>`;
   }).join('');
   const typeOptions = state.meta.questionTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
-  ['#categorySelect', '#challengeCategorySelect', '#roomCategorySelect', '#operatorThemeCategory'].forEach((selector) => $(selector).innerHTML = categoryOptions);
-  ['#levelSelect', '#challengeLevelSelect', '#roomLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'].forEach((selector) => $(selector).innerHTML = levelOptions);
+  ['#categorySelect', '#challengeCategorySelect', '#roomCategorySelect', '#championCategorySelect', '#operatorThemeCategory'].forEach((selector) => $(selector).innerHTML = categoryOptions);
+  ['#levelSelect', '#challengeLevelSelect', '#roomLevelSelect', '#championLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'].forEach((selector) => $(selector).innerHTML = levelOptions);
   $('#bankCategorySelect').innerHTML = categoryOptions;
   $('#bankLevelSelect').innerHTML = levelOptions;
   $('#operatorManualType').innerHTML = typeOptions;
@@ -188,11 +201,14 @@ function fillSelects() {
   $('#roomQuestionTypes').innerHTML = typeOptions;
   $('#roomCategorySelect').value = 'random';
   $('#roomLevelSelect').value = 'intermediaire';
+  $('#championCategorySelect').value = 'random';
+  $('#championLevelSelect').value = 'intermediaire';
   updateScholarNotices();
+  updateChampionEdition();
 }
 
 function updateScholarNotices() {
-  const scholarSelects = ['#levelSelect', '#roomLevelSelect', '#challengeLevelSelect', '#bankLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'];
+  const scholarSelects = ['#levelSelect', '#roomLevelSelect', '#championLevelSelect', '#challengeLevelSelect', '#bankLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'];
   scholarSelects.forEach((selector) => {
     const select = $(selector);
     if (!select) return;
@@ -200,6 +216,12 @@ function updateScholarNotices() {
   });
   $('#scholarNotice')?.classList.toggle('hidden', $('#levelSelect')?.value !== 'scholar');
   $('#roomScholarNotice')?.classList.toggle('hidden', $('#roomLevelSelect')?.value !== 'scholar');
+}
+
+function updateChampionEdition() {
+  const edition = document.querySelector('input[name="championEdition"]:checked')?.value || 'solo';
+  if ($('#championLevelSelect') && edition === 'scholar') $('#championLevelSelect').value = 'scholar';
+  updateScholarNotices();
 }
 
 function stepNumberInput(event) {
@@ -503,7 +525,7 @@ async function loadRooms() {
       <p class="pill">${escapeHtml(room.status)}</p>
       <h3>${escapeHtml(room.name)}</h3>
       <p>${escapeHtml(room.description || 'Competition biblique chronometree.')}</p>
-      <p>${escapeHtml(room.category)} · ${escapeHtml(room.difficulty)} · ${room.questionsPerRound} questions</p>
+      <p>${room.gameMode === 'champion' ? 'Question pour un Champion' : 'Competition'} - ${escapeHtml(room.category)} - ${escapeHtml(room.difficulty)} - ${room.questionsPerRound} questions</p>
       <p>${new Date(room.startDate).toLocaleString('fr-FR')} - ${new Date(room.endDate).toLocaleString('fr-FR')}</p>
       <button class="secondary" data-room-open="${escapeHtml(room.id)}">Ouvrir</button>
     </article>
@@ -518,6 +540,7 @@ async function loadQuestionBanks() {
     $('#roomQuestionBankSelect').innerHTML = questionBanks.length
       ? questionBanks.map((bank) => `<option value="${escapeHtml(bank.id)}">${escapeHtml(bank.title)} - ${escapeHtml(bank.difficulty)}</option>`).join('')
       : '<option value="">Aucune banque disponible</option>';
+    $('#championQuestionBankSelect').innerHTML = $('#roomQuestionBankSelect').innerHTML;
     updateQuestionBankVisibility();
   } catch (error) {
     console.warn('loadQuestionBanks failed', error);
@@ -528,6 +551,8 @@ async function loadQuestionBanks() {
 function updateQuestionBankVisibility() {
   const local = $('#roomQuestionSource')?.value === 'local';
   $('#roomQuestionBankWrap')?.classList.toggle('hidden', !local);
+  const championLocal = $('#championQuestionSource')?.value === 'local';
+  $('#championQuestionBankWrap')?.classList.toggle('hidden', !championLocal);
 }
 
 function updateScheduleVisibility() {
@@ -593,6 +618,70 @@ async function createRoom(event) {
   } finally {
     setButtonLoading(submit, false);
   }
+}
+
+async function createChampionRoom(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const submit = event.submitter;
+  setButtonLoading(submit, true);
+  setChampionMessage('Preparation du mode Champion...', true);
+  const form = new FormData(formElement);
+  const edition = form.get('championEdition') || 'solo';
+  const creatorId = localStorage.getItem('quizBibleCreatorId') || `creator-${cryptoRandom()}`;
+  localStorage.setItem('quizBibleCreatorId', creatorId);
+  const difficulty = edition === 'scholar' ? 'scholar' : form.get('difficulty');
+  if (form.get('questionSource') === 'local' && !form.get('questionBankId')) {
+    setChampionMessage('Choisissez une banque de questions locales.');
+    setButtonLoading(submit, false);
+    return;
+  }
+  try {
+    const { room } = await api('/api/rooms', {
+      method: 'POST',
+      body: {
+        name: form.get('name') || 'Question pour un Champion',
+        description: `Mode Champion - ${edition === 'solo' ? 'Solo' : edition === 'scholar' ? 'Scholar Edition' : 'Multijoueur humain'}`,
+        category: form.get('category'),
+        difficulty,
+        creatorId,
+        gameMode: 'champion',
+        championEdition: edition,
+        championVoiceEnabled: form.get('championVoiceEnabled') === 'on',
+        championMusicEnabled: form.get('championMusicEnabled') === 'on',
+        championFinaleMode: form.get('championFinaleMode'),
+        isPublic: edition !== 'solo',
+        questionMode: 'same',
+        questionTypes: ['qcm', 'vrai_faux', 'personnage', 'livre_biblique', 'qui_suis_je', 'indice_progressif', 'contexte_historique'],
+        explanationsEnabled: true,
+        questionSource: form.get('questionSource') || 'ai',
+        questionBankId: form.get('questionSource') === 'local' ? form.get('questionBankId') : '',
+        startDate: new Date().toISOString(),
+        endDate: new Date(Date.now() + 45 * 60 * 1000).toISOString(),
+        durationMinutes: 45,
+        questionTimeLimit: 12,
+        roundTimeLimit: 2,
+        questionsPerRound: 12
+      }
+    });
+    await joinRoom(room.id, form.get('playerName'));
+    showView('competition');
+    setChampionMessage('Salon Champion pret.', true);
+    setRoomActionMessage(edition === 'solo' ? 'Mode solo: lancez la premiere manche.' : 'Mode Champion cree. Partagez le code avec des joueurs humains.', true);
+    await loadRooms();
+  } catch (error) {
+    console.error('createChampionRoom failed', error);
+    setChampionMessage(error.message || 'Impossible de creer le mode Champion.');
+  } finally {
+    setButtonLoading(submit, false);
+  }
+}
+
+function setChampionMessage(message, ok = false) {
+  const target = $('#championFormMessage');
+  if (!target) return;
+  target.textContent = message || '';
+  target.classList.toggle('ok', ok);
 }
 
 function buildScheduledStart(form) {
@@ -711,8 +800,10 @@ function renderCompetitionQuestion() {
   $('#competitionFeedback').classList.add('hidden');
   $('#competitionCounter').textContent = `Question ${competition.index + 1}/${competition.questions.length}`;
   $('#competitionScore').textContent = `${competition.score} pts`;
-  $('#competitionType').textContent = question.type.replaceAll('_', ' ');
+  $('#competitionType').textContent = data.round?.championRoundLabel || question.type.replaceAll('_', ' ');
   $('#competitionQuestion').textContent = question.question;
+  renderChampionClues(data, question);
+  maybeSpeakChampionQuestion(data, question);
   $('#competitionAnswers').innerHTML = question.options.map((option) => `<button class="answer" type="button">${escapeHtml(option)}</button>`).join('');
   $$('#competitionAnswers .answer').forEach((button) => button.addEventListener('click', () => submitCompetitionAnswer(button.textContent)));
   tickCompetitionTimer();
@@ -1141,6 +1232,7 @@ async function loadAdmin() {
     <p><strong>${data.leaderboard.length}</strong> scores enregistres</p>
     <p><strong>${data.challenges.length}</strong> challenges</p>
   `;
+  renderAdminGlobalStats(data.historySummary || data.analytics?.summary || {});
   const leaderboardLevels = [
     ['debutant', 'Debutant'],
     ['intermediaire', 'Intermediaire'],
@@ -1220,6 +1312,118 @@ async function loadAdmin() {
   $$('[data-bank-assign]').forEach((button) => button.addEventListener('click', () => adminAssignBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankAssign))));
   $$('[data-bank-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteBank(button.dataset.bankDelete)));
   $$('[data-leaderboard-reset]').forEach((button) => button.addEventListener('click', () => adminResetLeaderboard(button.dataset.leaderboardReset)));
+  await loadAdminHistory(adminHistoryMode, false);
+}
+
+function renderAdminGlobalStats(summary) {
+  $('#adminGlobalStats').innerHTML = `
+    <div class="stats-strip">
+      <span><strong>${Number(summary.totalGames || 0)}</strong> parties</span>
+      <span><strong>${Number(summary.totalPlayers || 0)}</strong> joueurs</span>
+      <span><strong>${escapeHtml(summary.mostPlayedDifficulty || '-')}</strong> difficulte</span>
+      <span><strong>${escapeHtml(summary.mostPlayedCategory || '-')}</strong> categorie</span>
+      <span><strong>${Number(summary.averageScore || 0)}</strong> score moyen</span>
+      <span><strong>${Number(summary.bestGlobalScore || 0)}</strong> meilleur score</span>
+      <span><strong>${formatMs(summary.averageResponseTimeMs || 0)}</strong> temps moyen</span>
+    </div>
+  `;
+}
+
+async function loadAdminHistory(mode = 'competitions', pushPath = false) {
+  adminHistoryMode = mode;
+  $$('[data-admin-history]').forEach((button) => button.classList.toggle('active', button.dataset.adminHistory === mode));
+  const pathByMode = {
+    competitions: '/admin/competitions-history',
+    classic: '/admin/classic-history',
+    champion: '/admin/champion-history'
+  };
+  if (pushPath && pathByMode[mode]) history.replaceState(null, '', pathByMode[mode]);
+  const endpoint = {
+    competitions: '/api/admin/history/competitions',
+    classic: '/api/admin/history/classic',
+    champion: '/api/admin/history/champion'
+  }[mode] || '/api/admin/history/competitions';
+  const data = await api(endpoint);
+  renderAdminHistory(mode, data.sessions || []);
+}
+
+function renderAdminHistory(mode, sessions) {
+  const title = {
+    competitions: 'Historique competitions',
+    classic: 'Historique commencer',
+    champion: 'Historique QPUC'
+  }[mode] || 'Historique';
+  $('#adminHistoryDetail').innerHTML = '';
+  $('#adminHistoryList').innerHTML = `
+    <h4>${title}</h4>
+    ${sessions.map((session) => `
+      <article class="admin-item">
+        <strong>${escapeHtml(session.roomName || session.id)}</strong>
+        <p>${escapeHtml(session.id)} - ${formatDateTime(session.startedAt || session.endedAt)} - ${formatDurationText(session.durationSeconds || 0)}</p>
+        <p>${escapeHtml(session.gameMode)}${session.subMode ? ` / ${escapeHtml(session.subMode)}` : ''} - ${escapeHtml(session.category || '-')} - ${escapeHtml(session.difficulty || '-')} - ${Number(session.totalQuestions || 0)} questions</p>
+        <p>${Number(session.participantCount || 0)} participant(s) - statut ${escapeHtml(session.status || '-')} - generation ${session.questionSource === 'local_bank' ? 'banque locale' : 'IA'}</p>
+        ${renderParticipantSummary(session.participants || [])}
+        <div class="admin-item-actions">
+          <button class="secondary" data-history-detail="${escapeHtml(session.id)}">Detail questions</button>
+        </div>
+      </article>
+    `).join('') || '<p>Aucune session pour ce mode.</p>'}
+  `;
+  $$('[data-history-detail]').forEach((button) => button.addEventListener('click', () => loadAdminHistoryDetail(button.dataset.historyDetail)));
+}
+
+function renderParticipantSummary(participants) {
+  if (!participants.length) return '<p>Aucun participant enregistre.</p>';
+  return `
+    <div class="table-wrap compact">
+      <table>
+        <thead><tr><th>#</th><th>Joueur</th><th>Score</th><th>%</th><th>Perf.</th><th>OK</th><th>KO</th><th>NR</th></tr></thead>
+        <tbody>
+          ${participants.map((player) => `
+            <tr>
+              <td>${Number(player.rank || 0)}</td>
+              <td>${escapeHtml(player.displayName || 'Anonyme')}</td>
+              <td>${Number(player.finalScore || 0)}</td>
+              <td>${Number(player.percentage || 0)}%</td>
+              <td>${Number(player.performanceScore || 0).toFixed(2)}</td>
+              <td>${Number(player.correctAnswers || 0)}</td>
+              <td>${Number(player.wrongAnswers || 0)}</td>
+              <td>${Number(player.skippedAnswers || 0)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadAdminHistoryDetail(id) {
+  const { session } = await api(`/api/admin/history/session/${encodeURIComponent(id)}`);
+  $('#adminHistoryDetail').innerHTML = `
+    <article class="admin-item">
+      <strong>Detail question par question - ${escapeHtml(session.id)}</strong>
+      <div class="table-wrap compact">
+        <table>
+          <thead><tr><th>Joueur</th><th>Question</th><th>Reponse</th><th>Correcte</th><th>Temps</th><th>Points</th></tr></thead>
+          <tbody>
+            ${(session.attempts || []).map((attempt) => {
+              const participant = (session.participants || []).find((item) => item.id === attempt.participantId);
+              return `
+                <tr>
+                  <td>${escapeHtml(participant?.displayName || attempt.participantId || '-')}</td>
+                  <td>${escapeHtml(attempt.question || attempt.questionId || '-')}</td>
+                  <td>${escapeHtml(attempt.selectedAnswer || 'Non-reponse')}</td>
+                  <td>${escapeHtml(attempt.correctAnswer || '-')}</td>
+                  <td>${formatMs(attempt.responseTimeMs || 0)}</td>
+                  <td>${Number(attempt.pointsEarned || 0)}</td>
+                </tr>
+              `;
+            }).join('') || '<tr><td colspan="6">Aucun detail disponible.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
 }
 
 async function handleProtectedView(view) {
@@ -1292,6 +1496,16 @@ function formatDurationSeconds(value) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+function formatDurationText(value) {
+  return formatDurationSeconds(value);
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('fr-FR');
 }
 
 async function addQuestion(event) {
@@ -1578,11 +1792,13 @@ function renderCompetitionState(data) {
   competition.room = data.room;
   competition.participant = data.participant;
   competition.round = data.round;
+  document.body.classList.toggle('champion-immersive', data.room?.gameMode === 'champion' && ['preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions', 'finished'].includes(data.phase));
   setCompetitionImmersive(['preparing_questions', 'starting_countdown', 'starting', 'question_active', 'question_reveal', 'between_questions', 'finished'].includes(data.phase));
   syncCompetitionCountdown(data);
   const room = data.room;
   $('#roomPanel').classList.remove('hidden');
-  $('#roomStatus').textContent = `${labelPhase(data.phase || room.status)} - ${room.difficulty}`;
+  const roundLabel = data.round?.championRoundLabel ? ` - ${data.round.championRoundLabel}` : '';
+  $('#roomStatus').textContent = `${labelPhase(data.phase || room.status)}${roundLabel} - ${room.difficulty}`;
   $('#roomTitle').textContent = room.name;
   $('#roomDescription').textContent = room.description || 'En attente des amis. Partagez le code puis lancez la partie.';
   $('#roomParticipants').textContent = data.participants?.length || room.participantCount || room.participants?.length || 0;
@@ -1590,7 +1806,7 @@ function renderCompetitionState(data) {
   $('#roomCode').textContent = room.accessCode;
   $('#roomRoundsHistory').innerHTML = (room.rounds || []).map((round) => `
     <article class="admin-item">
-      <strong>Partie ${round.roundNumber} - ${escapeHtml(round.phase || round.status)}</strong>
+      <strong>${room.gameMode === 'champion' ? `Manche ${round.roundNumber}${round.championRoundLabel ? ` - ${escapeHtml(round.championRoundLabel)}` : ''}` : `Partie ${round.roundNumber}`} - ${escapeHtml(round.phase || round.status)}</strong>
       <p>${new Date(round.startsAt).toLocaleString('fr-FR')} - ${new Date(round.endsAt).toLocaleString('fr-FR')}</p>
       <p>IA: ${round.generatedByAI ? 'oui' : 'fallback local'} - validation: ${escapeHtml(round.validationStatus)}</p>
     </article>
@@ -1606,8 +1822,9 @@ function renderPhase(data) {
   $('#competitionScore').textContent = `${data.score || 0} pts`;
   $('#competitionCounter').textContent = data.totalQuestions ? `Question ${data.questionIndex + 1}/${data.totalQuestions}` : 'En attente';
   $('#competitionTimer').textContent = `${data.countdownSeconds || 0}s`;
-  $('#competitionTimerBar').style.width = data.room?.questionTimeLimit
-    ? `${Math.max(0, Math.min(100, (data.timeRemainingMs / (data.room.questionTimeLimit * 1000)) * 100))}%`
+  const activeTimeLimit = data.questionTimeLimit || data.room?.questionTimeLimit || 0;
+  $('#competitionTimerBar').style.width = activeTimeLimit
+    ? `${Math.max(0, Math.min(100, (data.timeRemainingMs / (activeTimeLimit * 1000)) * 100))}%`
     : '0%';
 
   if (phase === 'waiting') {
@@ -1626,10 +1843,10 @@ function renderPhase(data) {
     $('#competitionResults').innerHTML = `
       <div class="loading-state">
         <span class="spinner" aria-hidden="true"></span>
-        <p class="eyebrow">Preparation des questions</p>
-        <h2>Nous preparons les questions bibliques pour votre partie.</h2>
+        <p class="eyebrow">${data.room?.gameMode === 'champion' ? 'Preparation des questions...' : 'Preparation des questions'}</p>
+        <h2>${data.room?.gameMode === 'champion' ? 'Plateau en preparation.' : 'Nous preparons les questions bibliques pour votre partie.'}</h2>
         <p>L'IA peut prendre quelques secondes selon le niveau choisi.</p>
-        <p>Merci de patienter, la partie va bientot commencer pour tous les joueurs.</p>
+        <p>Le chrono de jeu demarrera seulement apres le compte a rebours.</p>
       </div>
     `;
     return;
@@ -1639,8 +1856,8 @@ function renderPhase(data) {
     $('#competitionResults').classList.remove('hidden');
     $('#competitionResults').innerHTML = `
       ${data.preparationMessage && data.preparationMessage !== 'Questions pretes.' ? `<p class="form-message ok">${escapeHtml(data.preparationMessage)}</p>` : ''}
-      <p class="eyebrow">Lancement</p>
-      <h2>La partie commence dans...</h2>
+      <p class="eyebrow">${data.round?.championRoundLabel || 'Lancement'}</p>
+      <h2>${data.room?.gameMode === 'champion' ? 'Attention, premiere question dans...' : 'La partie commence dans...'}</h2>
       <strong class="countdown-number">${data.countdownSeconds || 1}</strong>
     `;
     return;
@@ -1669,8 +1886,8 @@ function renderPhase(data) {
   $('#competitionFeedback').classList.remove('hidden');
   $('#competitionNext').classList.add('hidden');
   if (phase === 'question_active') {
-    $('#competitionFeedbackTitle').textContent = data.currentAnswer ? 'Reponse selectionnee' : 'A vous de jouer';
-    $('#competitionFeedbackText').textContent = data.currentAnswer ? 'Reponse selectionnee — tu peux changer avant la fin du chrono.' : 'Repondez avant la fin du chrono.';
+    $('#competitionFeedbackTitle').textContent = data.currentAnswer ? 'Reponse selectionnee' : championPromptTitle(data);
+    $('#competitionFeedbackText').textContent = data.currentAnswer ? 'Reponse selectionnee - tu peux changer avant la fin du chrono.' : championPromptText(data);
     $('#competitionReference').textContent = '';
     return;
   }
@@ -1682,11 +1899,56 @@ function renderPhase(data) {
       <span>${escapeHtml(question.explanation || 'Explication indisponible.')}</span>
       ${question.historicalNote ? `<span>Note historique : ${escapeHtml(question.historicalNote)}</span>` : ''}
       <strong>Points gagnes : ${currentPoints}</strong>
+      ${data.currentAnswer?.streakBonus ? `<span>Bonus serie : ${Number(data.currentAnswer.streakBonus)} pts</span>` : ''}
       <span>Prochaine question dans ${data.countdownSeconds || 0}...</span>
       ${leaderboard}
     `;
     $('#competitionReference').textContent = question.reference ? `Reference : ${question.reference}` : '';
   }
+}
+
+function renderChampionClues(data, question) {
+  const existing = $('.champion-clues');
+  if (existing) existing.remove();
+  if (data.room?.gameMode !== 'champion' || data.round?.championRoundType !== 'who_am_i' || !question.clues?.length) return;
+  const elapsedRatio = data.questionTimeLimit ? 1 - (data.timeRemainingMs / (data.questionTimeLimit * 1000)) : 0;
+  const visibleCount = Math.max(1, Math.min(question.clues.length, Math.ceil(elapsedRatio * question.clues.length) || 1));
+  const clues = document.createElement('div');
+  clues.className = 'champion-clues';
+  clues.innerHTML = question.clues.slice(0, visibleCount).map((clue, index) => `<span><b>Indice ${index + 1}</b>${escapeHtml(clue)}</span>`).join('');
+  $('#competitionQuestion')?.insertAdjacentElement('afterend', clues);
+}
+
+function championPromptTitle(data) {
+  if (data.room?.gameMode !== 'champion') return 'A vous de jouer';
+  return {
+    top_chrono: 'Top Chrono',
+    four_in_a_row: 'Gardez la serie',
+    who_am_i: 'Repondez avant le dernier indice',
+    face_off: 'Buzzer humain'
+  }[data.round?.championRoundType] || 'A vous de jouer';
+}
+
+function championPromptText(data) {
+  if (data.room?.gameMode !== 'champion') return 'Repondez avant la fin du chrono.';
+  return {
+    top_chrono: 'Reponse rapide: vitesse et serie augmentent le score.',
+    four_in_a_row: 'Objectif: 4 bonnes reponses de suite. Une erreur casse la serie.',
+    who_am_i: 'Plus la reponse arrive tot, plus elle rapporte.',
+    face_off: 'Deux joueurs humains uniquement: le plus rapide repond, l autre peut voler apres erreur.'
+  }[data.round?.championRoundType] || 'Repondez avant la fin du chrono.';
+}
+
+function maybeSpeakChampionQuestion(data, question) {
+  if (data.room?.gameMode !== 'champion' || !data.room?.championVoiceEnabled || !window.speechSynthesis) return;
+  const key = `${data.round?.id}:${question.id}`;
+  if (competition.spokenQuestionKey === key) return;
+  competition.spokenQuestionKey = key;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(question.question);
+  utterance.lang = 'fr-FR';
+  utterance.rate = 1.03;
+  window.speechSynthesis.speak(utterance);
 }
 
 function renderCompetitionResults(results) {
@@ -1696,7 +1958,7 @@ function renderCompetitionResults(results) {
     <p class="eyebrow">Classement final</p>
     <h2>${winner ? `${escapeHtml(winner.playerName)} remporte la partie` : 'Partie terminee'}</h2>
     <div class="result-actions">
-      <button class="primary" id="replayCompetition" type="button">Rejouer</button>
+      <button class="primary" id="replayCompetition" type="button">${competition.room?.gameMode === 'champion' ? 'Manche suivante' : 'Rejouer'}</button>
       <button class="secondary" id="backHomeFromCompetition" type="button">Retour accueil</button>
     </div>
     <div class="final-results">
@@ -1720,7 +1982,7 @@ function renderCompetitionResults(results) {
 
 function formatMs(ms) {
   const seconds = Math.round(Number(ms || 0) / 100) / 10;
-  return `${seconds}s moy.`;
+  return `${seconds}s`;
 }
 
 function formatCountdown(ms) {
@@ -1773,7 +2035,7 @@ async function submitCompetitionAnswer(button, selectedAnswer) {
   $$('#competitionAnswers .answer').forEach((answerButton) => answerButton.classList.toggle('selected', answerButton === button));
   $('#competitionFeedback').classList.remove('hidden');
   $('#competitionFeedbackTitle').textContent = 'Reponse selectionnee';
-  $('#competitionFeedbackText').textContent = 'Reponse selectionnee — tu peux changer avant la fin du chrono.';
+  $('#competitionFeedbackText').textContent = 'Reponse selectionnee - tu peux changer avant la fin du chrono.';
   $('#competitionReference').textContent = '';
   setButtonLoading(button, true);
   try {
@@ -1812,6 +2074,7 @@ function setCompetitionImmersive(active) {
   const wasActive = document.body.classList.contains('competition-immersive');
   if (active && !$('#competitionView')?.classList.contains('active')) showView('competition');
   document.body.classList.toggle('competition-immersive', active);
+  if (!active) document.body.classList.remove('champion-immersive');
   if (active && !wasActive) window.scrollTo({ top: 0, left: 0 });
 }
 
@@ -1844,8 +2107,9 @@ function syncCompetitionCountdown(data) {
     const remainingMs = phaseEndsAt - (Date.now() + serverOffset);
     const seconds = Math.max(0, Math.ceil(remainingMs / 1000));
     $('#competitionTimer').textContent = `${seconds}s`;
-    if (data.room?.questionTimeLimit && data.phase === 'question_active') {
-      $('#competitionTimerBar').style.width = `${Math.max(0, Math.min(100, (remainingMs / (data.room.questionTimeLimit * 1000)) * 100))}%`;
+    const activeTimeLimit = data.questionTimeLimit || data.room?.questionTimeLimit || 0;
+    if (activeTimeLimit && data.phase === 'question_active') {
+      $('#competitionTimerBar').style.width = `${Math.max(0, Math.min(100, (remainingMs / (activeTimeLimit * 1000)) * 100))}%`;
     }
     if (remainingMs <= 0 && competition.phaseRefreshKey !== phaseKey) {
       competition.phaseRefreshKey = phaseKey;

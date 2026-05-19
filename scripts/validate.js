@@ -33,7 +33,10 @@ for (const file of [
   'data/aiErrors.json',
   'data/generatedQuestionsHistory.json',
   'data/gameQuestions.json',
-  'data/playerQuestionHistory.json'
+  'data/playerQuestionHistory.json',
+  'data/gameSessions.json',
+  'data/gameParticipants.json',
+  'data/questionAttempts.json'
 ]) {
   JSON.parse(fs.readFileSync(path.join(root, file), 'utf8'));
 }
