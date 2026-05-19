@@ -39,6 +39,7 @@ let operatorTargetType = 'bank';
 let operatorTargetId = '';
 let isMobileMenuOpen = false;
 let pendingProtectedView = '';
+let adminHistoryMode = 'competitions';
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -58,7 +59,14 @@ async function init() {
   if (redirect === '/operator' || redirect === 'operator') pendingProtectedView = 'operator';
   handleInitialHash();
   restoreCompetitionSession();
-  if (location.pathname === '/admin') showView('admin');
+  if (location.pathname.startsWith('/admin')) {
+    adminHistoryMode = {
+      '/admin/competitions-history': 'competitions',
+      '/admin/classic-history': 'classic',
+      '/admin/champion-history': 'champion'
+    }[location.pathname] || adminHistoryMode;
+    showView('admin');
+  }
   if (location.pathname === '/operator') showView('operator');
   if (location.pathname === '/login') showView('login');
 }
@@ -148,6 +156,7 @@ function bindForms() {
   $('#loginForm').addEventListener('submit', loginUserForm);
   $('#adminLogout').addEventListener('click', adminLogout);
   $('#adminRefresh').addEventListener('click', loadAdmin);
+  $$('[data-admin-history]').forEach((button) => button.addEventListener('click', () => loadAdminHistory(button.dataset.adminHistory, true)));
   $('#adminUserEditor').addEventListener('submit', adminCreateUser);
   $('#challengeEditor').addEventListener('submit', addChallenge);
   $('#bankEditor').addEventListener('submit', addQuestionBank);
@@ -1223,6 +1232,7 @@ async function loadAdmin() {
     <p><strong>${data.leaderboard.length}</strong> scores enregistres</p>
     <p><strong>${data.challenges.length}</strong> challenges</p>
   `;
+  renderAdminGlobalStats(data.historySummary || data.analytics?.summary || {});
   const leaderboardLevels = [
     ['debutant', 'Debutant'],
     ['intermediaire', 'Intermediaire'],
@@ -1302,6 +1312,118 @@ async function loadAdmin() {
   $$('[data-bank-assign]').forEach((button) => button.addEventListener('click', () => adminAssignBank(data.questionBanks.find((bank) => bank.id === button.dataset.bankAssign))));
   $$('[data-bank-delete]').forEach((button) => button.addEventListener('click', () => adminDeleteBank(button.dataset.bankDelete)));
   $$('[data-leaderboard-reset]').forEach((button) => button.addEventListener('click', () => adminResetLeaderboard(button.dataset.leaderboardReset)));
+  await loadAdminHistory(adminHistoryMode, false);
+}
+
+function renderAdminGlobalStats(summary) {
+  $('#adminGlobalStats').innerHTML = `
+    <div class="stats-strip">
+      <span><strong>${Number(summary.totalGames || 0)}</strong> parties</span>
+      <span><strong>${Number(summary.totalPlayers || 0)}</strong> joueurs</span>
+      <span><strong>${escapeHtml(summary.mostPlayedDifficulty || '-')}</strong> difficulte</span>
+      <span><strong>${escapeHtml(summary.mostPlayedCategory || '-')}</strong> categorie</span>
+      <span><strong>${Number(summary.averageScore || 0)}</strong> score moyen</span>
+      <span><strong>${Number(summary.bestGlobalScore || 0)}</strong> meilleur score</span>
+      <span><strong>${formatMs(summary.averageResponseTimeMs || 0)}</strong> temps moyen</span>
+    </div>
+  `;
+}
+
+async function loadAdminHistory(mode = 'competitions', pushPath = false) {
+  adminHistoryMode = mode;
+  $$('[data-admin-history]').forEach((button) => button.classList.toggle('active', button.dataset.adminHistory === mode));
+  const pathByMode = {
+    competitions: '/admin/competitions-history',
+    classic: '/admin/classic-history',
+    champion: '/admin/champion-history'
+  };
+  if (pushPath && pathByMode[mode]) history.replaceState(null, '', pathByMode[mode]);
+  const endpoint = {
+    competitions: '/api/admin/history/competitions',
+    classic: '/api/admin/history/classic',
+    champion: '/api/admin/history/champion'
+  }[mode] || '/api/admin/history/competitions';
+  const data = await api(endpoint);
+  renderAdminHistory(mode, data.sessions || []);
+}
+
+function renderAdminHistory(mode, sessions) {
+  const title = {
+    competitions: 'Historique competitions',
+    classic: 'Historique commencer',
+    champion: 'Historique QPUC'
+  }[mode] || 'Historique';
+  $('#adminHistoryDetail').innerHTML = '';
+  $('#adminHistoryList').innerHTML = `
+    <h4>${title}</h4>
+    ${sessions.map((session) => `
+      <article class="admin-item">
+        <strong>${escapeHtml(session.roomName || session.id)}</strong>
+        <p>${escapeHtml(session.id)} - ${formatDateTime(session.startedAt || session.endedAt)} - ${formatDurationText(session.durationSeconds || 0)}</p>
+        <p>${escapeHtml(session.gameMode)}${session.subMode ? ` / ${escapeHtml(session.subMode)}` : ''} - ${escapeHtml(session.category || '-')} - ${escapeHtml(session.difficulty || '-')} - ${Number(session.totalQuestions || 0)} questions</p>
+        <p>${Number(session.participantCount || 0)} participant(s) - statut ${escapeHtml(session.status || '-')} - generation ${session.questionSource === 'local_bank' ? 'banque locale' : 'IA'}</p>
+        ${renderParticipantSummary(session.participants || [])}
+        <div class="admin-item-actions">
+          <button class="secondary" data-history-detail="${escapeHtml(session.id)}">Detail questions</button>
+        </div>
+      </article>
+    `).join('') || '<p>Aucune session pour ce mode.</p>'}
+  `;
+  $$('[data-history-detail]').forEach((button) => button.addEventListener('click', () => loadAdminHistoryDetail(button.dataset.historyDetail)));
+}
+
+function renderParticipantSummary(participants) {
+  if (!participants.length) return '<p>Aucun participant enregistre.</p>';
+  return `
+    <div class="table-wrap compact">
+      <table>
+        <thead><tr><th>#</th><th>Joueur</th><th>Score</th><th>%</th><th>Perf.</th><th>OK</th><th>KO</th><th>NR</th></tr></thead>
+        <tbody>
+          ${participants.map((player) => `
+            <tr>
+              <td>${Number(player.rank || 0)}</td>
+              <td>${escapeHtml(player.displayName || 'Anonyme')}</td>
+              <td>${Number(player.finalScore || 0)}</td>
+              <td>${Number(player.percentage || 0)}%</td>
+              <td>${Number(player.performanceScore || 0).toFixed(2)}</td>
+              <td>${Number(player.correctAnswers || 0)}</td>
+              <td>${Number(player.wrongAnswers || 0)}</td>
+              <td>${Number(player.skippedAnswers || 0)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadAdminHistoryDetail(id) {
+  const { session } = await api(`/api/admin/history/session/${encodeURIComponent(id)}`);
+  $('#adminHistoryDetail').innerHTML = `
+    <article class="admin-item">
+      <strong>Detail question par question - ${escapeHtml(session.id)}</strong>
+      <div class="table-wrap compact">
+        <table>
+          <thead><tr><th>Joueur</th><th>Question</th><th>Reponse</th><th>Correcte</th><th>Temps</th><th>Points</th></tr></thead>
+          <tbody>
+            ${(session.attempts || []).map((attempt) => {
+              const participant = (session.participants || []).find((item) => item.id === attempt.participantId);
+              return `
+                <tr>
+                  <td>${escapeHtml(participant?.displayName || attempt.participantId || '-')}</td>
+                  <td>${escapeHtml(attempt.question || attempt.questionId || '-')}</td>
+                  <td>${escapeHtml(attempt.selectedAnswer || 'Non-reponse')}</td>
+                  <td>${escapeHtml(attempt.correctAnswer || '-')}</td>
+                  <td>${formatMs(attempt.responseTimeMs || 0)}</td>
+                  <td>${Number(attempt.pointsEarned || 0)}</td>
+                </tr>
+              `;
+            }).join('') || '<tr><td colspan="6">Aucun detail disponible.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
 }
 
 async function handleProtectedView(view) {
@@ -1374,6 +1496,16 @@ function formatDurationSeconds(value) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+function formatDurationText(value) {
+  return formatDurationSeconds(value);
+}
+
+function formatDateTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('fr-FR');
 }
 
 async function addQuestion(event) {
@@ -1850,7 +1982,7 @@ function renderCompetitionResults(results) {
 
 function formatMs(ms) {
   const seconds = Math.round(Number(ms || 0) / 100) / 10;
-  return `${seconds}s moy.`;
+  return `${seconds}s`;
 }
 
 function formatCountdown(ms) {

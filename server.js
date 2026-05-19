@@ -359,10 +359,13 @@ async function handleApi(req, res, url) {
 
 async function handleAdminApi(req, res, url, adminUser) {
   if (req.method === 'GET' && url.pathname === '/api/admin/dashboard') {
+    const analytics = buildAdminAnalytics();
     sendJson(res, 200, {
       questions: [],
       challenges: readJson('challenges.json'),
       sessions: readJson('sessions.json'),
+      analytics,
+      historySummary: analytics.summary,
       leaderboard: readJson('leaderboard.json'),
       rooms: readJson('rooms.json').map(withRoomCounts),
       roomParticipants: readJson('roomParticipants.json'),
@@ -377,6 +380,29 @@ async function handleAdminApi(req, res, url, adminUser) {
       categories,
       levels
     });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/history/competitions') {
+    sendJson(res, 200, { sessions: historyByMode('competition'), summary: buildAdminAnalytics().summary });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/history/classic') {
+    sendJson(res, 200, { sessions: historyByMode('classic'), summary: buildAdminAnalytics().summary });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/history/champion') {
+    sendJson(res, 200, { sessions: historyByMode('champion'), summary: buildAdminAnalytics().summary });
+    return;
+  }
+
+  const historySessionMatch = url.pathname.match(/^\/api\/admin\/history\/session\/([^/]+)$/);
+  if (historySessionMatch && req.method === 'GET') {
+    const session = detailedHistorySession(decodeURIComponent(historySessionMatch[1]));
+    if (!session) return sendJson(res, 404, { error: 'Session introuvable' });
+    sendJson(res, 200, { session });
     return;
   }
 
@@ -1082,6 +1108,7 @@ function finishRound(roundId) {
   const rounds = readJson('rounds.json');
   const round = rounds.find((item) => item.id === roundId);
   if (!round) return null;
+  finalizeRoundAnalytics(round);
   round.status = 'finished';
   round.phase = 'finished';
   round.gameStatus = 'game_finished';
@@ -1308,7 +1335,29 @@ async function createStartGame(body, count) {
   return { gameSessionId, questions: saved };
 }
 
+const QuestionGenerationService = {
+  async prepare(input = {}) {
+    const normalized = {
+      ...input,
+      category: validId(input.category, categories, 'random'),
+      difficulty: normalizeLevelId(input.difficulty || input.level || 'debutant'),
+      level: normalizeLevelId(input.level || input.difficulty || 'debutant'),
+      questionSource: input.questionSource === 'local' ? 'local' : 'ai',
+      recentQuestions: Array.isArray(input.recentQuestions) ? input.recentQuestions : []
+    };
+    if (normalized.gameMode === 'classic' && normalized.questionSource !== 'local') {
+      const questions = await generateClassicQuestionsInternal({ ...normalized, level: normalized.level });
+      return { questions, validationStatus: questions.some((question) => question.source === 'fallback_local') ? 'fallback_local' : 'validated', validation: { results: [] } };
+    }
+    return generateRoundQuestionsInternal(normalized);
+  }
+};
+
 async function generateRoundQuestions(input) {
+  return QuestionGenerationService.prepare(input);
+}
+
+async function generateRoundQuestionsInternal(input) {
   const count = clamp(Number(input.count || 10), 1, 20);
   if (input.questionSource === 'local') {
     if (!input.questionBankId) throw new Error('Choisissez une banque de questions locales.');
@@ -1751,10 +1800,344 @@ function roomResults(roomId) {
   };
 }
 
+function analyticsFiles() {
+  return {
+    sessions: readJson('gameSessions.json'),
+    participants: readJson('gameParticipants.json'),
+    attempts: readJson('questionAttempts.json')
+  };
+}
+
+function persistUnique(file, rows, key = 'id') {
+  const current = readJson(file);
+  const existing = new Set(current.map((item) => item[key]));
+  const additions = rows.filter((item) => item?.[key] && !existing.has(item[key]));
+  if (additions.length) writeJson(file, current.concat(additions));
+}
+
+function questionSourceFor(value, generatedByAI) {
+  if (value === 'local' || value === 'local_bank' || value === 'local_selected') return 'local_bank';
+  if (value === 'fallback_local') return 'local_bank';
+  return generatedByAI === false ? 'local_bank' : 'ai';
+}
+
+function persistClassicAnalytics(session, review, questions, answers, body) {
+  const sessionId = session.gameSessionId || session.id;
+  const endedAt = session.createdAt;
+  const durationSeconds = Number(session.durationSeconds || session.duration || body.duration || 0);
+  const questionSource = questions.some((question) => String(question.source || question.aiValidationStatus || '').includes('local'))
+    ? 'local_bank'
+    : 'ai';
+  const skippedAnswers = review.filter((item) => !item.answer).length;
+  const participantId = `gp-${sessionId}`;
+  persistUnique('gameSessions.json', [{
+    id: sessionId,
+    gameMode: 'classic',
+    subMode: '',
+    roomId: null,
+    category: session.category,
+    difficulty: session.level,
+    questionSource,
+    questionBankId: null,
+    totalQuestions: session.totalQuestions,
+    startedAt: new Date(new Date(endedAt).getTime() - durationSeconds * 1000).toISOString(),
+    endedAt,
+    durationSeconds,
+    status: 'finished',
+    createdBy: null
+  }]);
+  persistUnique('gameParticipants.json', [{
+    id: participantId,
+    sessionId,
+    userId: null,
+    displayName: session.playerName,
+    finalScore: session.score,
+    percentage: Math.round((Number(session.correctAnswers || 0) / Math.max(Number(session.totalQuestions || 1), 1)) * 100),
+    performanceScore: session.scorePerformance,
+    totalResponseTime: Math.max(0, durationSeconds * 1000),
+    correctAnswers: session.correctAnswers,
+    wrongAnswers: Math.max(0, session.totalQuestions - session.correctAnswers - skippedAnswers),
+    skippedAnswers,
+    rank: 1
+  }]);
+  persistUnique('questionAttempts.json', review.map((item) => {
+    const submitted = answers.find((answer) => answer.questionId === item.questionId) || {};
+    const responseTimeMs = Math.max(0, (Number(submitted.timeLimit || body.timeLimit || 30) - Number(submitted.timeLeft || 0)) * 1000);
+    return {
+      id: `qa-${sessionId}-${item.questionId}`,
+      sessionId,
+      participantId,
+      questionId: item.questionId,
+      question: item.question,
+      selectedAnswer: item.answer,
+      correctAnswer: item.correctAnswer,
+      isCorrect: item.isCorrect,
+      responseTimeMs,
+      pointsEarned: item.points,
+      createdAt: endedAt
+    };
+  }));
+}
+
+function finalizeRoundAnalytics(roundInput, forcedStatus = 'finished') {
+  const round = readJson('rounds.json').find((item) => item.id === roundInput.id) || roundInput;
+  const room = readJson('rooms.json').find((item) => item.id === round.roomId);
+  if (!room) return;
+  const sessionId = round.id;
+  if (readJson('gameSessions.json').some((item) => item.id === sessionId)) return;
+  const questions = readJson('roundQuestions.json').filter((item) => item.roundId === round.id).sort((a, b) => a.order - b.order);
+  const participants = readJson('roomParticipants.json').filter((item) => item.roomId === room.id);
+  const answers = readJson('answers.json').filter((item) => item.roundId === round.id);
+  const endedAt = new Date().toISOString();
+  const startedAt = round.startsAt || room.startDate || room.createdAt || endedAt;
+  const durationSeconds = Math.max(1, Math.round((new Date(endedAt) - new Date(startedAt)) / 1000));
+  const leaderboard = participants.map((participant) => {
+    const participantAnswers = answers.filter((answer) => answer.participantId === participant.id && answer.isFinalized);
+    const correctAnswers = participantAnswers.filter((answer) => answer.isCorrect).length;
+    const skippedAnswers = Math.max(0, questions.length - participantAnswers.filter((answer) => answer.selectedAnswer).length);
+    const wrongAnswers = participantAnswers.filter((answer) => answer.selectedAnswer && !answer.isCorrect).length;
+    const finalScore = participantAnswers.reduce((sum, answer) => sum + Number(answer.totalPoints || 0), 0);
+    const totalResponseTime = participantAnswers.reduce((sum, answer) => sum + Number(answer.responseTimeMs || 0), 0);
+    return {
+      participant,
+      finalScore,
+      percentage: questions.length ? Math.round((correctAnswers / questions.length) * 100) : 0,
+      performanceScore: finalScore / Math.max(durationSeconds, 1),
+      totalResponseTime,
+      correctAnswers,
+      wrongAnswers,
+      skippedAnswers
+    };
+  }).sort((a, b) => b.finalScore - a.finalScore || b.correctAnswers - a.correctAnswers || a.totalResponseTime - b.totalResponseTime);
+
+  persistUnique('gameSessions.json', [{
+    id: sessionId,
+    gameMode: room.gameMode === 'champion' ? 'champion' : 'competition',
+    subMode: round.championRoundType || '',
+    roomId: room.id,
+    roomName: room.name,
+    category: room.category,
+    difficulty: room.difficulty,
+    questionSource: questionSourceFor(room.questionSource, round.generatedByAI),
+    questionBankId: room.questionBankId || null,
+    totalQuestions: questions.length,
+    startedAt,
+    endedAt,
+    durationSeconds,
+    status: forcedStatus,
+    createdBy: room.creatorId || null
+  }]);
+  persistUnique('gameParticipants.json', leaderboard.map((row, index) => ({
+    id: `gp-${sessionId}-${row.participant.id}`,
+    sessionId,
+    userId: row.participant.userId || null,
+    displayName: row.participant.playerName || row.participant.displayName || 'Anonyme',
+    finalScore: row.finalScore,
+    percentage: row.percentage,
+    performanceScore: row.performanceScore,
+    totalResponseTime: row.totalResponseTime,
+    correctAnswers: row.correctAnswers,
+    wrongAnswers: row.wrongAnswers,
+    skippedAnswers: row.skippedAnswers,
+    rank: index + 1
+  })));
+  persistUnique('questionAttempts.json', participants.flatMap((participant) => questions.map((question) => {
+    const answer = answers.find((item) => item.participantId === participant.id && item.questionId === question.id);
+    return {
+      id: `qa-${sessionId}-${participant.id}-${question.id}`,
+      sessionId,
+      participantId: `gp-${sessionId}-${participant.id}`,
+      questionId: question.id,
+      question: question.question,
+      selectedAnswer: answer?.selectedAnswer || '',
+      correctAnswer: question.correctAnswer,
+      isCorrect: Boolean(answer?.isCorrect),
+      responseTimeMs: Number(answer?.responseTimeMs || 0),
+      pointsEarned: Number(answer?.totalPoints || 0),
+      createdAt: answer?.answeredAt || endedAt
+    };
+  })));
+}
+
+function buildHistorySessions() {
+  const { sessions, participants, attempts } = analyticsFiles();
+  const sessionMap = new Map(sessions.map((session) => [session.id, { ...session }]));
+
+  for (const legacy of readJson('sessions.json')) {
+    const id = legacy.gameSessionId || legacy.id;
+    if (!sessionMap.has(id)) {
+      sessionMap.set(id, {
+        id,
+        gameMode: 'classic',
+        subMode: '',
+        roomId: null,
+        roomName: '',
+        category: legacy.category,
+        difficulty: legacy.level,
+        questionSource: 'ai',
+        questionBankId: null,
+        totalQuestions: legacy.totalQuestions,
+        startedAt: legacy.createdAt,
+        endedAt: legacy.createdAt,
+        durationSeconds: legacy.durationSeconds || legacy.duration || 0,
+        status: 'finished',
+        createdBy: null
+      });
+    }
+  }
+
+  for (const room of readJson('rooms.json')) {
+    const rounds = readJson('rounds.json').filter((round) => round.roomId === room.id && ['finished', 'failed'].includes(round.status));
+    for (const round of rounds) {
+      if (sessionMap.has(round.id)) continue;
+      const questions = readJson('roundQuestions.json').filter((question) => question.roundId === round.id);
+      sessionMap.set(round.id, {
+        id: round.id,
+        gameMode: room.gameMode === 'champion' ? 'champion' : 'competition',
+        subMode: round.championRoundType || '',
+        roomId: room.id,
+        roomName: room.name,
+        category: room.category,
+        difficulty: room.difficulty,
+        questionSource: questionSourceFor(room.questionSource, round.generatedByAI),
+        questionBankId: room.questionBankId || null,
+        totalQuestions: questions.length,
+        startedAt: round.startsAt || room.startDate,
+        endedAt: round.endsAt || room.endDate,
+        durationSeconds: Math.max(0, Math.round((new Date(round.endsAt || room.endDate) - new Date(round.startsAt || room.startDate)) / 1000)),
+        status: round.status === 'failed' ? 'cancelled' : 'finished',
+        createdBy: room.creatorId || null
+      });
+    }
+  }
+
+  return [...sessionMap.values()].map((session) => {
+    let sessionParticipants = participants.filter((item) => item.sessionId === session.id);
+    let sessionAttempts = attempts.filter((item) => item.sessionId === session.id);
+    if (!sessionParticipants.length && session.gameMode === 'classic') {
+      const legacy = readJson('sessions.json').find((item) => (item.gameSessionId || item.id) === session.id);
+      if (legacy) {
+        sessionParticipants = [{
+          id: `legacy-gp-${session.id}`,
+          sessionId: session.id,
+          userId: null,
+          displayName: legacy.playerName || 'Anonyme',
+          finalScore: legacy.score || 0,
+          percentage: legacy.totalQuestions ? Math.round((Number(legacy.correctAnswers || 0) / legacy.totalQuestions) * 100) : 0,
+          performanceScore: legacy.scorePerformance || 0,
+          totalResponseTime: Number(legacy.durationSeconds || 0) * 1000,
+          correctAnswers: legacy.correctAnswers || 0,
+          wrongAnswers: Math.max(0, Number(legacy.totalQuestions || 0) - Number(legacy.correctAnswers || 0)),
+          skippedAnswers: 0,
+          rank: 1
+        }];
+      }
+    }
+    if (!sessionParticipants.length && session.roomId) {
+      const legacy = legacyRoundParticipants(session);
+      sessionParticipants = legacy.participants;
+      sessionAttempts = sessionAttempts.length ? sessionAttempts : legacy.attempts;
+    }
+    return {
+      ...session,
+      participants: sessionParticipants,
+      attempts: sessionAttempts,
+      participantCount: sessionParticipants.length,
+      averageScore: average(sessionParticipants.map((item) => item.finalScore)),
+      bestScore: Math.max(0, ...sessionParticipants.map((item) => Number(item.finalScore || 0)))
+    };
+  }).sort((a, b) => new Date(b.startedAt || b.endedAt || 0) - new Date(a.startedAt || a.endedAt || 0));
+}
+
+function legacyRoundParticipants(session) {
+  const roomParticipants = readJson('roomParticipants.json').filter((item) => item.roomId === session.roomId);
+  const questions = readJson('roundQuestions.json').filter((item) => item.roundId === session.id);
+  const answers = readJson('answers.json').filter((item) => item.roundId === session.id && item.isFinalized);
+  const participants = roomParticipants.map((participant) => {
+    const participantAnswers = answers.filter((answer) => answer.participantId === participant.id);
+    const correctAnswers = participantAnswers.filter((answer) => answer.isCorrect).length;
+    const finalScore = participantAnswers.reduce((sum, answer) => sum + Number(answer.totalPoints || 0), 0);
+    const totalResponseTime = participantAnswers.reduce((sum, answer) => sum + Number(answer.responseTimeMs || 0), 0);
+    return {
+      id: `legacy-gp-${session.id}-${participant.id}`,
+      sessionId: session.id,
+      userId: participant.userId || null,
+      displayName: participant.playerName || participant.displayName || 'Anonyme',
+      finalScore,
+      percentage: questions.length ? Math.round((correctAnswers / questions.length) * 100) : 0,
+      performanceScore: finalScore / Math.max(Number(session.durationSeconds || 1), 1),
+      totalResponseTime,
+      correctAnswers,
+      wrongAnswers: participantAnswers.filter((answer) => answer.selectedAnswer && !answer.isCorrect).length,
+      skippedAnswers: Math.max(0, questions.length - participantAnswers.filter((answer) => answer.selectedAnswer).length),
+      rank: 0
+    };
+  }).sort((a, b) => b.finalScore - a.finalScore || b.correctAnswers - a.correctAnswers || a.totalResponseTime - b.totalResponseTime)
+    .map((participant, index) => ({ ...participant, rank: index + 1 }));
+  const attempts = roomParticipants.flatMap((participant) => questions.map((question) => {
+    const answer = answers.find((item) => item.participantId === participant.id && item.questionId === question.id);
+    return {
+      id: `legacy-qa-${session.id}-${participant.id}-${question.id}`,
+      sessionId: session.id,
+      participantId: `legacy-gp-${session.id}-${participant.id}`,
+      questionId: question.id,
+      question: question.question,
+      selectedAnswer: answer?.selectedAnswer || '',
+      correctAnswer: question.correctAnswer,
+      isCorrect: Boolean(answer?.isCorrect),
+      responseTimeMs: Number(answer?.responseTimeMs || 0),
+      pointsEarned: Number(answer?.totalPoints || 0),
+      createdAt: answer?.answeredAt || session.endedAt
+    };
+  }));
+  return { participants, attempts };
+}
+
+function historyByMode(mode) {
+  return buildHistorySessions().filter((session) => session.gameMode === mode);
+}
+
+function detailedHistorySession(id) {
+  return buildHistorySessions().find((session) => session.id === id) || null;
+}
+
+function buildAdminAnalytics() {
+  const sessions = buildHistorySessions();
+  const participants = sessions.flatMap((session) => session.participants || []);
+  const attempts = sessions.flatMap((session) => session.attempts || []);
+  return {
+    summary: {
+      totalGames: sessions.length,
+      totalPlayers: participants.length,
+      mostPlayedDifficulty: mostFrequent(sessions.map((session) => session.difficulty)),
+      mostPlayedCategory: mostFrequent(sessions.map((session) => session.category)),
+      averageScore: Math.round(average(participants.map((item) => item.finalScore))),
+      bestGlobalScore: Math.max(0, ...participants.map((item) => Number(item.finalScore || 0))),
+      averageResponseTimeMs: Math.round(average(attempts.filter((item) => item.responseTimeMs).map((item) => item.responseTimeMs)))
+    },
+    recentSessions: sessions.slice(0, 20)
+  };
+}
+
+function average(values) {
+  const valid = values.map(Number).filter(Number.isFinite);
+  return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : 0;
+}
+
+function mostFrequent(values) {
+  const counts = new Map();
+  for (const value of values.filter(Boolean)) counts.set(value, (counts.get(value) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+}
+
 function updateRoomStatus(roomId, status) {
   const rooms = readJson('rooms.json');
   const room = rooms.find((item) => item.id === roomId);
   if (!room) return null;
+  if (['closed', 'finished'].includes(status) && !['closed', 'finished'].includes(room.status)) {
+    const latestRound = latestRoundForRoom(roomId);
+    if (latestRound) finalizeRoundAnalytics(latestRound, status === 'closed' ? 'cancelled' : 'finished');
+  }
   room.status = status;
   writeJson('rooms.json', rooms);
   return room;
@@ -2022,7 +2405,7 @@ function appendJson(file, item) {
 }
 
 function serveStatic(req, res, pathname) {
-  const cleanPath = pathname === '/' || pathname === '/admin' || pathname === '/operator' || pathname === '/login' ? '/index.html' : pathname;
+  const cleanPath = pathname === '/' || pathname === '/operator' || pathname === '/login' || pathname === '/admin' || pathname.startsWith('/admin/') ? '/index.html' : pathname;
   const fullPath = path.normalize(path.join(PUBLIC_DIR, cleanPath));
   if (!fullPath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -2341,6 +2724,7 @@ function scoreGame(body) {
     durationSeconds,
     createdAt
   };
+  persistClassicAnalytics(session, review, questions, answers, body);
   return {
     session,
     leaderboard: {
@@ -2391,6 +2775,11 @@ function checkSingleAnswer(body) {
 }
 
 async function generateQuestions(input) {
+  const result = await QuestionGenerationService.prepare({ ...input, gameMode: 'classic', questionSource: input.questionSource || 'ai' });
+  return result.questions;
+}
+
+async function generateClassicQuestionsInternal(input) {
   const category = validId(input.category, categories, 'random');
   const level = validId(normalizeLevelId(input.level), levels, 'debutant');
   const count = clamp(Number(input.count || 10), 1, 20);
