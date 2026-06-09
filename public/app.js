@@ -18,8 +18,6 @@ const competition = {
   room: null,
   participant: null,
   round: null,
-  questions: [],
-  index: 0,
   score: 0,
   timerId: null,
   pollId: null,
@@ -50,7 +48,7 @@ async function init() {
   bindNavigation();
   bindForms();
   await syncNavigationRole();
-  $('#themeToggle').addEventListener('click', toggleTheme);
+  $('#themeToggle')?.addEventListener('click', toggleTheme);
   state.meta = await api('/api/meta');
   fillSelects();
   await Promise.all([loadChallenges(), loadLeaderboard(), loadRooms(), loadQuestionBanks()]);
@@ -85,24 +83,50 @@ function bindNavigation() {
   $('#menuToggle')?.addEventListener('click', toggleMobileMenu);
   $('#mobileMenuClose')?.addEventListener('click', closeMobileMenu);
   $('#mobileMenuOverlay')?.addEventListener('click', closeMobileMenu);
+  $('#managementTrigger')?.addEventListener('click', toggleManagementMenu);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       closeMobileMenu();
+      closeManagementMenu();
     }
+  });
+  // Close the "Gestion" dropdown when clicking outside of it.
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('#managementMenu')) closeManagementMenu();
   });
   $$('[data-view]').forEach((trigger) => {
     trigger.addEventListener('click', (event) => {
       event.preventDefault();
       showView(trigger.dataset.view);
       closeMobileMenu();
+      closeManagementMenu();
       focusViewTarget(trigger.dataset.focusTarget);
     });
   });
 }
 
+function toggleManagementMenu(event) {
+  event.stopPropagation();
+  const menu = $('#managementMenu');
+  if (!menu) return;
+  const open = menu.classList.toggle('open');
+  $('#managementTrigger')?.setAttribute('aria-expanded', String(open));
+}
+
+function closeManagementMenu() {
+  $('#managementMenu')?.classList.remove('open');
+  $('#managementTrigger')?.setAttribute('aria-expanded', 'false');
+}
+
 function showView(view) {
+  // Stop the solo game timer when navigating away; renderQuestion re-creates it per question.
+  clearInterval(state.timerId);
+  state.timerId = null;
   setGameImmersive(false);
-  if (view !== 'competition') setCompetitionImmersive(false);
+  if (view !== 'competition') {
+    setCompetitionImmersive(false);
+    stopCompetitionPolling();
+  }
   $$('.view').forEach((section) => section.classList.remove('active'));
   $$('.nav button').forEach((button) => button.classList.toggle('active', button.dataset.view === view));
   $(`#${view}View`)?.classList.add('active');
@@ -110,7 +134,11 @@ function showView(view) {
   location.hash = view;
   if (view === 'leaderboard') loadLeaderboard();
   if (view === 'challenges') loadChallenges();
-  if (view === 'competition') loadRooms();
+  if (view === 'competition') {
+    loadRooms();
+    // Resume live sync if returning to an in-progress room.
+    if (competition.room && !competition.pollId) startCompetitionPolling();
+  }
   if (view === 'admin' || view === 'operator') handleProtectedView(view);
 }
 
@@ -191,8 +219,12 @@ function fillSelects() {
     return `<option value="${escapeHtml(level.id)}">${escapeHtml(label)}</option>`;
   }).join('');
   const typeOptions = state.meta.questionTypes.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
-  ['#categorySelect', '#challengeCategorySelect', '#roomCategorySelect', '#championCategorySelect', '#operatorThemeCategory'].forEach((selector) => $(selector).innerHTML = categoryOptions);
-  ['#levelSelect', '#challengeLevelSelect', '#roomLevelSelect', '#championLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'].forEach((selector) => $(selector).innerHTML = levelOptions);
+  const setOptions = (selectors, html) => selectors.forEach((selector) => {
+    const el = $(selector);
+    if (el) el.innerHTML = html;
+  });
+  setOptions(['#categorySelect', '#challengeCategorySelect', '#roomCategorySelect', '#championCategorySelect', '#operatorThemeCategory'], categoryOptions);
+  setOptions(['#levelSelect', '#challengeLevelSelect', '#roomLevelSelect', '#championLevelSelect', '#operatorManualLevel', '#operatorThemeLevel', '#operatorTextLevel'], levelOptions);
   $('#bankCategorySelect').innerHTML = categoryOptions;
   $('#bankLevelSelect').innerHTML = levelOptions;
   $('#operatorManualType').innerHTML = typeOptions;
@@ -363,6 +395,7 @@ function quitGame() {
 
 function renderQuestion() {
   clearInterval(state.timerId);
+  state.answering = false;
   const question = state.questions[state.currentIndex];
   $('#feedback').classList.add('hidden');
   $('#questionCounter').textContent = `Question ${state.currentIndex + 1}/${state.questions.length}`;
@@ -386,7 +419,10 @@ function tickTimer() {
 }
 
 async function answerQuestion(answer) {
+  if (state.answering) return;
+  state.answering = true;
   clearInterval(state.timerId);
+  $$('#answers .answer').forEach((button) => { button.disabled = true; });
   const question = state.questions[state.currentIndex];
   const review = await api('/api/check-answer', {
     method: 'POST',
@@ -738,145 +774,6 @@ async function joinRoom(roomIdOrCode, playerName) {
   renderCompetitionState({ room: response.room, participant: response.participant, participants: response.room.participants || [], leaderboard: [] });
   await loadCompetitionState();
   startCompetitionPolling();
-}
-
-function renderRoom() {
-  const room = competition.room;
-  if (!room) return;
-  $('#roomPanel').classList.remove('hidden');
-  $('#roomStatus').textContent = `${room.status} · ${room.difficulty}`;
-  $('#roomTitle').textContent = room.name;
-  $('#roomDescription').textContent = room.description || 'En attente des amis. Partagez le code puis lancez la partie.';
-  $('#roomParticipants').textContent = room.participantCount || room.participants?.length || 0;
-  $('#roomRounds').textContent = room.roundCount || room.rounds?.length || 0;
-  $('#roomCode').textContent = room.accessCode;
-  $('#roomRoundsHistory').innerHTML = (room.rounds || []).map((round) => `
-    <article class="admin-item">
-      <strong>Partie ${round.roundNumber} · ${round.status}</strong>
-      <p>${new Date(round.startsAt).toLocaleString('fr-FR')} - ${new Date(round.endsAt).toLocaleString('fr-FR')}</p>
-      <p>IA: ${round.generatedByAI ? 'oui' : 'fallback local'} · validation: ${escapeHtml(round.validationStatus)}</p>
-    </article>
-  `).join('') || '<p>Aucun tour.</p>';
-  loadRoomLeaderboard();
-}
-
-async function refreshCurrentRound() {
-  if (!competition.room) return;
-  const data = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/current-round?code=${encodeURIComponent(competition.room.accessCode)}`);
-  competition.round = data.round;
-  competition.questions = data.questions || [];
-  if (competition.round && competition.questions.length) {
-    competition.index = 0;
-    competition.score = 0;
-    $('#competitionResults').classList.add('hidden');
-    $('#competitionBoard').classList.remove('hidden');
-    renderCompetitionQuestion();
-  }
-}
-
-async function startCompetitionRound() {
-  if (!competition.room) return;
-  const creatorId = localStorage.getItem('quizBibleCreatorId') || '';
-  const data = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/start-round?code=${encodeURIComponent(competition.room.accessCode)}`, {
-    method: 'POST',
-    body: { creatorId }
-  });
-  competition.round = data.round;
-  competition.questions = data.questions;
-  competition.index = 0;
-  competition.score = 0;
-  $('#competitionResults').classList.add('hidden');
-  $('#competitionBoard').classList.remove('hidden');
-  await openRoom(competition.room.id);
-  renderCompetitionQuestion();
-}
-
-function renderCompetitionQuestion() {
-  clearInterval(competition.timerId);
-  const question = competition.questions[competition.index];
-  if (!question) return finishCompetitionRound();
-  competition.remaining = competition.room.questionTimeLimit;
-  competition.questionStartedAt = Date.now();
-  $('#competitionFeedback').classList.add('hidden');
-  $('#competitionCounter').textContent = `Question ${competition.index + 1}/${competition.questions.length}`;
-  $('#competitionScore').textContent = `${competition.score} pts`;
-  $('#competitionType').textContent = data.round?.championRoundLabel || question.type.replaceAll('_', ' ');
-  $('#competitionQuestion').textContent = question.question;
-  renderChampionClues(data, question);
-  maybeSpeakChampionQuestion(data, question);
-  $('#competitionAnswers').innerHTML = question.options.map((option) => `<button class="answer" type="button">${escapeHtml(option)}</button>`).join('');
-  $$('#competitionAnswers .answer').forEach((button) => button.addEventListener('click', () => submitCompetitionAnswer(button.textContent)));
-  tickCompetitionTimer();
-  competition.timerId = setInterval(() => {
-    competition.remaining -= 1;
-    tickCompetitionTimer();
-    if (competition.remaining <= 0) submitCompetitionAnswer('');
-  }, 1000);
-}
-
-function tickCompetitionTimer() {
-  $('#competitionTimer').textContent = `${Math.max(0, competition.remaining)}s`;
-  $('#competitionTimerBar').style.width = `${Math.max(0, (competition.remaining / competition.room.questionTimeLimit) * 100)}%`;
-}
-
-async function submitCompetitionAnswer(selectedAnswer) {
-  clearInterval(competition.timerId);
-  const question = competition.questions[competition.index];
-  const participant = competition.participant || getStoredParticipant(competition.room.id);
-  if (!participant) {
-    alert('Rejoignez le salon avant de repondre.');
-    return;
-  }
-  const responseTimeMs = Date.now() - competition.questionStartedAt;
-  const result = await api(`/api/rounds/${encodeURIComponent(competition.round.id)}/answer`, {
-    method: 'POST',
-    body: { participantId: participant.id || participant, questionId: question.id, selectedAnswer, responseTimeMs }
-  });
-  competition.score += result.answer.totalPoints;
-  $('#competitionScore').textContent = `${competition.score} pts`;
-  $$('#competitionAnswers .answer').forEach((button) => {
-    button.disabled = true;
-    if (button.textContent === result.correctAnswer) button.classList.add('correct');
-    if (selectedAnswer && button.textContent === selectedAnswer && !result.answer.isCorrect) button.classList.add('wrong');
-  });
-  $('#competitionFeedbackTitle').textContent = result.answer.isCorrect ? `+${result.answer.totalPoints} points` : '0 point';
-  $('#competitionFeedbackText').textContent = competition.room.explanationsEnabled === false
-    ? `Bonne reponse : ${result.correctAnswer}.`
-    : `${result.explanation} Bonne reponse : ${result.correctAnswer}.`;
-  if (competition.room.explanationsEnabled !== false && result.historicalNote) {
-    $('#competitionFeedbackText').textContent += ` Note historique : ${result.historicalNote}`;
-  }
-  $('#competitionReference').textContent = result.reference ? `Reference : ${result.reference}` : '';
-  $('#competitionFeedback').classList.remove('hidden');
-  $('#competitionNext').textContent = competition.index + 1 >= competition.questions.length ? 'Resultat du tour' : 'Question suivante';
-  renderRoomLeaderboard(result.leaderboard);
-}
-
-function nextCompetitionQuestion() {
-  competition.index += 1;
-  if (competition.index >= competition.questions.length) {
-    finishCompetitionRound();
-    return;
-  }
-  renderCompetitionQuestion();
-}
-
-function finishCompetitionRound() {
-  clearInterval(competition.timerId);
-  $('#competitionBoard').classList.add('hidden');
-  $('#competitionResults').classList.remove('hidden');
-  $('#competitionResults').innerHTML = `
-    <p class="eyebrow">Classement final</p>
-    <h2>${competition.score} points</h2>
-    <p>La partie est terminee. Le classement final est affiche ci-dessous.</p>
-  `;
-  loadRoomLeaderboard();
-}
-
-async function loadRoomLeaderboard() {
-  if (!competition.room) return;
-  const { leaderboard } = await api(`/api/rooms/${encodeURIComponent(competition.room.id)}/leaderboard?code=${encodeURIComponent(competition.room.accessCode)}`);
-  renderRoomLeaderboard(leaderboard);
 }
 
 function renderRoomLeaderboard(leaderboard) {

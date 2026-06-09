@@ -1,27 +1,35 @@
 :root {
-  --bg: #f8f4ea;
-  --surface: #fffdf8;
-  --ink: #132238;
-  --muted: #6d7480;
-  --line: #e5d9c2;
-  --primary: #12345b;
-  --primary-2: #1e5f8a;
-  --gold: #c9952f;
+  --bg: #f6f2ea;
+  --surface: #ffffff;
+  --surface-2: #f1ece1;
+  --ink: #16202e;
+  --muted: #5f6875;
+  --line: #e6ddcd;
+  --primary: #1b4d72;
+  --primary-2: #2e86ab;
+  --gold: #d4a02c;
   --good: #198754;
   --bad: #c0392b;
-  --shadow: 0 20px 60px rgba(19, 34, 56, 0.14);
+  --shadow-sm: 0 1px 2px rgba(19, 34, 56, 0.05), 0 2px 8px rgba(19, 34, 56, 0.06);
+  --shadow: 0 8px 24px rgba(19, 34, 56, 0.10);
+  --shadow-lg: 0 18px 48px rgba(19, 34, 56, 0.14);
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
 }
 
 body.dark {
-  --bg: #101923;
-  --surface: #182638;
-  --ink: #f8f4ea;
-  --muted: #b9c1cc;
-  --line: #2d4057;
-  --primary: #d5a547;
-  --primary-2: #7db8df;
+  --bg: #0e1620;
+  --surface: #16212e;
+  --surface-2: #1d2a3a;
+  --ink: #f4f1e9;
+  --muted: #aeb7c3;
+  --line: #2a3a4f;
+  --primary: #4aa3d6;
+  --primary-2: #6fc0e6;
   --gold: #e2b85c;
-  --shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.28);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 18px 48px rgba(0, 0, 0, 0.42);
 }
 
 * {
@@ -36,10 +44,10 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(201, 149, 47, 0.16), transparent 26rem),
-    linear-gradient(180deg, var(--bg), #ffffff 70%);
+    radial-gradient(circle at top left, color-mix(in srgb, var(--gold) 14%, transparent), transparent 26rem),
+    var(--bg);
   color: var(--ink);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
 }
 
 button,
@@ -187,11 +195,17 @@ p {
   overflow-wrap: anywhere;
 }
 
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+}
+
 h1 {
   margin: 0;
   font-size: clamp(3rem, 9vw, 7rem);
   line-height: 0.92;
-  letter-spacing: 0;
+  letter-spacing: -0.01em;
 }
 
 h2 {
@@ -216,6 +230,55 @@ h3 {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.mode-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.mode-card {
+  display: grid;
+  gap: 0.3rem;
+  align-content: start;
+  padding: 1rem;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.mode-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--line));
+  box-shadow: var(--shadow);
+}
+
+.mode-card strong {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+}
+
+.mode-card span:last-child {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.mode-card-icon {
+  width: 2.2rem;
+  height: 2.2rem;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--gold) 16%, transparent);
+  color: var(--gold);
+  font-size: 1.1rem;
 }
 
 .primary,
@@ -316,7 +379,7 @@ h3 {
   gap: 1rem;
   padding: 1.2rem;
   border-radius: 8px;
-  background: linear-gradient(145deg, #12345b, #1f5d89);
+  background: linear-gradient(145deg, var(--primary), var(--primary-2));
   color: #fff;
 }
 
@@ -1001,85 +1064,34 @@ th {
   gap: 0.5rem;
 }
 
+/*
+ * Legacy max-width tweaks kept ONLY for selectors the mobile-first cascade
+ * below does not already cover. Rules that were redundant (overridden by the
+ * mobile-first base section that follows) have been removed to end the
+ * conflicting double-cascade. Desktop values come from the top of the file
+ * and from the min-width queries further down.
+ */
 @media (max-width: 860px) {
-  .topbar {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .nav {
-    order: 3;
-    flex-basis: 100%;
-    justify-content: flex-start;
-  }
-
-  .hero,
-  .hero.active {
-    display: block;
-  }
-
-  .hero-panel {
-    margin-top: 1.5rem;
-  }
-
-  .setup-grid,
-  .admin-login,
-  .admin-layout,
-  .competition-layout,
-  .champion-launch,
-  .join-bar {
-    grid-template-columns: 1fr;
-  }
-
-  .room-head {
-    display: grid;
-  }
-
-  .room-actions {
-    justify-content: stretch;
-  }
-
-  body.competition-immersive .room-actions {
-    justify-content: flex-end;
-  }
-
-  body.competition-immersive #leaveRoom {
-    width: auto;
-  }
-
-  .final-result-row {
+  .champion-launch {
     grid-template-columns: 1fr;
   }
 
   .champion-preview {
     grid-template-columns: 1fr;
   }
+
+  body.competition-immersive .room-actions {
+    justify-content: flex-end;
+  }
 }
 
 @media (max-width: 520px) {
-  .stats-strip {
-    grid-template-columns: 1fr;
-  }
-
-  .game-meta {
-    flex-direction: column;
-  }
-
-  .primary,
-  .secondary {
-    width: 100%;
-  }
-
   .champion-mode-grid {
     grid-template-columns: 1fr;
   }
 
   body.competition-immersive #competitionView {
     padding-bottom: 6rem;
-  }
-
-  body.competition-immersive .answers {
-    grid-template-columns: 1fr;
   }
 
   body.competition-immersive .game-meta {
@@ -1089,10 +1101,6 @@ th {
 
   body.competition-immersive .game-meta span:first-child {
     grid-column: 1 / -1;
-  }
-
-  body.competition-immersive #leaveRoom {
-    width: auto;
   }
 }
 
@@ -1495,7 +1503,8 @@ body.competition-immersive #competitionView {
   .competition-layout,
   .admin-login,
   .admin-layout,
-  .card-grid {
+  .card-grid,
+  .mode-cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

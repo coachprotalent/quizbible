@@ -31,8 +31,13 @@
         <button data-view="competition">Competition</button>
         <button data-view="challenges">Challenges</button>
         <button data-view="leaderboard">Classement</button>
-        <button data-view="admin">Administration</button>
-        <button data-view="operator">Operateur</button>
+        <div class="management-menu" id="managementMenu">
+          <button class="management-trigger" id="managementTrigger" type="button" aria-haspopup="true" aria-expanded="false">Gestion</button>
+          <div class="management-dropdown">
+            <button data-view="admin">Administration</button>
+            <button data-view="operator">Operateur</button>
+          </div>
+        </div>
       </nav>
       <button class="theme-toggle" id="themeToggle" aria-label="Changer de theme">☾</button>
     </header>
@@ -45,10 +50,28 @@
           <p class="lead">Un jeu biblique moderne avec niveaux progressifs, explications, references et challenges d'etude.</p>
           <div class="hero-actions">
             <button class="primary" data-view="play">Commencer</button>
-            <button class="secondary" data-view="champion">Question pour un Champion</button>
-            <button class="secondary" data-view="competition">Competition</button>
-            <button class="secondary" data-view="challenges">Challenges</button>
-            <button class="secondary" data-view="leaderboard">Classement</button>
+          </div>
+          <div class="mode-cards" aria-label="Modes de jeu">
+            <button class="mode-card" data-view="champion">
+              <span class="mode-card-icon">★</span>
+              <strong>Question pour un Champion</strong>
+              <span>Mode TV biblique, manches chronométrées et finale.</span>
+            </button>
+            <button class="mode-card" data-view="competition">
+              <span class="mode-card-icon">⚑</span>
+              <strong>Competition</strong>
+              <span>Salon rapide entre amis avec code d'invitation.</span>
+            </button>
+            <button class="mode-card" data-view="challenges">
+              <span class="mode-card-icon">✦</span>
+              <strong>Challenges</strong>
+              <span>Parcours d'étude progressifs sur 7 jours.</span>
+            </button>
+            <button class="mode-card" data-view="leaderboard">
+              <span class="mode-card-icon">♛</span>
+              <strong>Classement</strong>
+              <span>Suivez les meilleurs scores et votre progression.</span>
+            </button>
           </div>
         </div>
         <div class="hero-panel" aria-label="Apercu des modes">
@@ -204,7 +227,7 @@
                   <h2 id="competitionQuestion"></h2>
                   <div class="answers" id="competitionAnswers"></div>
                 </article>
-                <aside class="feedback hidden" id="competitionFeedback">
+                <aside class="feedback hidden" id="competitionFeedback" role="status" aria-live="polite">
                   <h3 id="competitionFeedbackTitle"></h3>
                   <div id="competitionFeedbackText"></div>
                   <p class="reference" id="competitionReference"></p>
@@ -283,7 +306,7 @@
             <h2 id="questionText"></h2>
             <div class="answers" id="answers"></div>
           </article>
-          <aside class="feedback hidden" id="feedback">
+          <aside class="feedback hidden" id="feedback" role="status" aria-live="polite">
             <h3 id="feedbackTitle"></h3>
             <p id="feedbackText"></p>
             <p class="reference" id="feedbackReference"></p>
