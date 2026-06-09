@@ -1583,8 +1583,9 @@ body.competition-immersive #competitionView {
     padding: 0;
     width: auto;
     height: auto;
-    overflow-x: auto;
-    overflow-y: visible;
+    /* Must stay visible so the "Gestion" dropdown is not clipped by the nav box.
+       (overflow-x:auto would force overflow-y to auto and clip it.) */
+    overflow: visible;
     background: transparent;
     border-left: 0;
     box-shadow: none;
